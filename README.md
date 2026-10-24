@@ -112,6 +112,11 @@ You can verify your accounts by right-clicking the tray icon and choosing **Sett
 
 Most settings can be changed from the tray icon's **Settings...** dialog. Advanced users can also edit `config.py` directly — changes take effect on the next sync cycle (no restart needed).
 
+For an installed build, the active configuration is
+`%APPDATA%\Exchange Mirror\config.py`; development runs use the file beside
+`mirror.py`. Existing user values are preserved and missing settings are added
+automatically on upgrade.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `SYNC_INTERVAL_MINUTES` | `15` | How often to sync (minutes) |

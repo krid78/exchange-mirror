@@ -36,3 +36,15 @@ SYNC_INTERVAL_MINUTES = 15
 # Leave empty to auto-detect (works when exactly 2 accounts exist)
 ACCOUNT_A = ""
 ACCOUNT_B = ""
+
+# Category names and defaults for synchronization privacy.
+# Match complete Outlook category names, case-insensitively.
+# DoNotSync takes precedence over Secret and global anonymization.
+DO_NOT_SYNC_CATEGORY = "DoNotSync"
+SECRET_CATEGORY = "Secret"
+
+# Anonymize every mirror within the configured sync window.
+ANONYMIZE_ALL = False
+
+# Anonymized mirror subject before MIRROR_SUBJECT_PREFIX is applied.
+ANONYMIZED_SUBJECT = "Belegt"

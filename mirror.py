@@ -79,6 +79,18 @@ CONFIG_DEFAULTS = [
         "# Start Exchange Mirror automatically when Windows starts. Kept in sync",
         "# with the registry Run key by the Settings dialog when saved.",
     ]),
+    ("DO_NOT_SYNC_CATEGORY", "DoNotSync", [
+        "# Exclude appointments with this complete category name (case-insensitive).",
+    ]),
+    ("SECRET_CATEGORY", "Secret", [
+        "# Anonymize appointments with this complete category name (case-insensitive).",
+    ]),
+    ("ANONYMIZE_ALL", False, [
+        "# Anonymize every mirror within the configured sync window.",
+    ]),
+    ("ANONYMIZED_SUBJECT", "Belegt", [
+        "# Anonymized title before the configured mirror subject prefix is applied.",
+    ]),
 ]
 
 
@@ -176,11 +188,13 @@ def _load_config():
         )
     with open(config_path, "r", encoding="utf-8") as f:
         content = f.read()
-    _backfill_missing_settings(config_path, content)
+    content = _backfill_missing_settings(config_path, content)
 
     spec = importlib.util.spec_from_file_location("config", config_path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # Read saved settings immediately, even after same-size edits within one
+    # filesystem timestamp tick; timestamp-based .pyc caching can return old values.
+    exec(compile(content, config_path, "exec"), mod.__dict__)
     for key, default, _comment in CONFIG_DEFAULTS:
         if not hasattr(mod, key):
             setattr(mod, key, default)
@@ -253,6 +267,8 @@ def save_config(updates: dict) -> None:
 
     with open(config_path, "r", encoding="utf-8") as f:
         content = f.read()
+
+    content = _backfill_missing_settings(config_path, content)
 
     for key, new_value in updates.items():
         try:
