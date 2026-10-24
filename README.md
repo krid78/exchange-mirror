@@ -97,41 +97,59 @@ The sync runs on a timer (default: every 15 minutes) and covers a configurable d
 
 ## Exclusion and Privacy
 
-Apply privacy categories to the original appointment, or to the series for
-recurring appointments. Names are matched in full without regard to case.
+Apply these Outlook categories to the **original appointment**, or to the
+**series** for recurring appointments. Names are matched in full, without
+regard to case: `donotsync` matches `DoNotSync`, but `DoNotSyncLater` does not.
+Changing the category of a mirror does not change the original's sync policy.
 
-| Original category | Result in the other calendar |
+| Original or setting | Result in the other calendar |
 |---|---|
-| `DoNotSync` | No copy; existing matching copies are removed |
-| `Secret` | Anonymized copy |
-| Neither | Normal appointment details |
-| Both | Exclusion takes precedence |
+| `DoNotSync` category | No mirror; existing matching mirrors are removed |
+| `Secret` category | Anonymized mirror |
+| **Anonymize all mirrored appointments** enabled | Anonymized mirrors for all eligible originals |
+| None of the above | Normal appointment details |
+| `DoNotSync` combined with either anonymization rule | Exclusion takes precedence |
 
-An anonymized copy has the title `[Mirror] Belegt` by default. Description,
-formatted content, location, original categories, required/optional attendees
-and resource participants are cleared. Only the configured mirror category
-remains. Times, duration, all-day status, availability, sensitivity and source
-identity are retained; reminders and invitations remain disabled.
+An anonymized copy has the title **`[Mirror] Belegt`** by default. Its
+description, including formatted content, location, original categories,
+required/optional attendees and resource participants are cleared. Only the
+configured mirror category remains. Start/end times, duration, all-day status,
+availability and sensitivity are retained; reminders and invitations remain
+disabled. The original is not edited.
 
-Adding `Secret` also clears details from existing copies on the next successful
-sync within the date window. Removing it restores normal details. Removing
-`DoNotSync` allows copying again with the applicable category policy. Copies
-outside the window are not retroactively cleared or removed.
+To anonymize everything, open **Settings → General → Privacy** and enable
+**Anonymize all mirrored appointments**, then save. The hint displays your
+configured placeholder and secret category. The two category names and the
+placeholder can be customized in `config.py`.
 
-Series markers apply to all occurrences, including changed exceptions. Where
-Outlook COM does not support category assignment to individual occurrences or
-exceptions, use the whole series or a non-recurring appointment.
+Changes apply on the **next sync cycle within the configured date window**:
 
-Category names and the replacement subject can be customized in `config.py`.
-Names must be nonempty and distinct from each other and the mirror category.
-The subject must be nonempty text. Use Dry Run Mode to preview changes without
-writing calendars. Anonymized actions and deletion messages omit original
-titles; old log entries are not retroactively cleared.
+- Adding `Secret` or enabling global anonymization also clears details from
+  existing mirrors in that window.
+- Removing `Secret` restores normal details unless global anonymization remains
+  enabled. Turning global anonymization off restores details only for originals
+  without `Secret`.
+- Removing `DoNotSync` allows a mirror to be created again, with the applicable
+  privacy policy.
+- Copies outside the window are not retroactively cleared or removed. This also
+  matters when an appointment moves outside the window.
 
-If Outlook cannot resolve a policy or complete cleanup, the app skips the
-affected work and reports a warning. An old copy may retain details until a
-successful sync. Anonymization is not a general scrubber for arbitrary metadata
-or attachments manually added to a copy. The original remains unchanged.
+Series markers apply to all occurrences in the window, including changed
+exceptions. Where Outlook COM does not allow categories to be assigned to individual
+occurrences or exceptions, set privacy categories on the entire series or on
+ordinary non-recurring appointments. Per-occurrence category editing is not
+a supported workflow for such clients.
+
+Start with **Dry Run Mode** to preview creation, updates and deletion without
+changing calendars. Dry-run logs for excluded or anonymized appointments omit
+their original titles. New anonymized-action and deletion logs are also
+redacted; old log entries are not retroactively cleared. If Outlook cannot read
+the policy or complete anonymization, the app reports a warning and skips the
+affected work. An existing copy may retain old details until a successful sync;
+check the log rather than assuming that a failed cleanup succeeded.
+
+Anonymization covers the fields described above. It is not a general scrubber
+for arbitrary metadata or attachments manually added to a mirror.
 
 ## Account Setup
 
@@ -170,11 +188,16 @@ automatically on upgrade.
 | `MIRROR_CATEGORY` | `Mirrored` | Outlook category for mirrored items (set to `""` to disable) |
 | `DO_NOT_SYNC_CATEGORY` | `DoNotSync` | Original category that excludes an appointment or series; config-file setting |
 | `SECRET_CATEGORY` | `Secret` | Original category that anonymizes an appointment or series; config-file setting |
+| `ANONYMIZE_ALL` | `False` | Anonymize all eligible mirrors; also available in Settings → General → Privacy |
 | `ANONYMIZED_SUBJECT` | `Belegt` | Replacement title before applying the mirror prefix; config-file setting |
 | `ACCOUNT_A` / `ACCOUNT_B` | *(empty)* | SMTP address or display name of accounts to sync (see Account Setup) |
 | `START_ON_WINDOWS_LOGIN` | `False` | Start Exchange Mirror automatically when Windows starts |
 
 The installer preserves your `config.py` edits during upgrades — it won't overwrite an existing config.
+
+Privacy category names must be nonempty, distinct from each other and from the
+mirror category, and contain only one category name. The placeholder must be
+nonempty text. Category lists use the Windows regional list separator.
 
 ## Troubleshooting
 
