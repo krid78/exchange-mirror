@@ -6,6 +6,7 @@ from enum import Enum
 class SyncDecision(Enum):
     NORMAL = "normal"
     EXCLUDE = "exclude"
+    ANONYMIZE = "anonymize"
 
 
 def parse_categories(value, separator):
@@ -15,18 +16,36 @@ def parse_categories(value, separator):
     return [name.strip() for name in (value or "").split(separator) if name.strip()]
 
 
-def decide_sync(categories, *, series_categories=(), do_not_sync_category="DoNotSync"):
-    """Combine occurrence and master categories, giving exclusion precedence."""
+def decide_sync(categories, *, series_categories=(),
+                do_not_sync_category="DoNotSync", secret_category="Secret"):
+    """Combine already-resolved occurrence and master categories.
+
+    Callers must resolve required series data successfully before calling;
+    missing or unreadable master data must not be represented as an empty list.
+    """
     names = {name.strip().casefold() for name in (*categories, *series_categories)}
     if do_not_sync_category.strip().casefold() in names:
         return SyncDecision.EXCLUDE
+    if secret_category.strip().casefold() in names:
+        return SyncDecision.ANONYMIZE
     return SyncDecision.NORMAL
 
 
 def build_target_fields(source_fields, *, subject_prefix, mirror_category,
-                        separator):
-    """Calculate the normal mirror values for comparison and writing."""
+                        separator, decision=SyncDecision.NORMAL,
+                        anonymized_subject="Belegt"):
+    """Calculate the values used by both comparison and writing.
+
+    Recipient and formatted-body cleanup belongs to the COM adapter;
+    these fields alone are not a complete privacy implementation.
+    """
+    if decision is SyncDecision.EXCLUDE:
+        raise ValueError("Excluded appointments have no target fields")
     target = dict(source_fields)
+    if decision is SyncDecision.ANONYMIZE:
+        target.update(Subject=anonymized_subject, Body="", Location="",
+                      Categories="", RequiredAttendees="", OptionalAttendees="",
+                      Resources="")
     if "Subject" in target and subject_prefix:
         subject = target["Subject"] or ""
         if not subject.startswith(subject_prefix):

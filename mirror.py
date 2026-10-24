@@ -451,22 +451,45 @@ def get_category_separator():
     return separator
 
 
-def get_target_fields(source, separator):
-    """Snapshot source fields and calculate normal mirror values."""
+class PrivacySyncError(RuntimeError):
+    """Sanitized error: never include source values or COM exception text."""
+
+    def __init__(self, message, *, operation=None, hresult=None, error_code=None):
+        super().__init__(message)
+        self.operation = operation
+        self.hresult = hresult
+        self.error_code = error_code
+
+
+PRIVACY_PROP_NAME = "MirrorPrivacyVersion"
+PRIVACY_VERSION = "1"
+PRIVATE_FIELDS = {
+    "Subject", "Body", "Location", "Categories", "RequiredAttendees", "OptionalAttendees",
+}
+
+
+def get_target_fields(source, separator, *, decision=SyncDecision.NORMAL):
+    """Read source data once; private content need not even be read when hidden."""
     init()
     source_fields = {}
     for field in SYNCED_FIELDS:
+        if decision is SyncDecision.ANONYMIZE and field in PRIVATE_FIELDS:
+            continue
         try:
             source_fields[field] = getattr(source, field)
         except (pywintypes.com_error, AttributeError) as exc:
+            if decision is SyncDecision.ANONYMIZE:
+                raise PrivacySyncError("Cannot read anonymized appointment schedule") from None
             log.debug("Could not read field %s: %s", field, exc)
     return build_target_fields(
         source_fields, subject_prefix=config.MIRROR_SUBJECT_PREFIX,
         mirror_category=config.MIRROR_CATEGORY, separator=separator,
+        decision=decision,
+        anonymized_subject=getattr(config, "ANONYMIZED_SUBJECT", "Belegt"),
     )
 
 
-def copy_fields(source, dest, *, target_fields=None, separator=None):
+def copy_fields(source, dest, *, target_fields=None, separator=None, strict=False):
     """Write calculated target values, including markers and fixed flags."""
     init()
     if target_fields is None:
@@ -476,6 +499,9 @@ def copy_fields(source, dest, *, target_fields=None, separator=None):
         try:
             setattr(dest, field, value)
         except (pywintypes.com_error, AttributeError) as exc:
+            if strict:
+                raise PrivacySyncError("Cannot write anonymized appointment fields",
+                                       operation="write_" + field) from None
             if field in ("MeetingStatus", "ReminderSet"):
                 raise
             log.debug("Could not copy field %s: %s", field, exc)
@@ -493,49 +519,138 @@ def apply_mirror_markers(item):
     item.Categories = target["Categories"]
 
 
-def needs_update(source, mirror, *, target_fields=None, separator=None):
+def get_privacy_version(item, *, strict=False):
+    try:
+        prop = item.UserProperties.Find(PRIVACY_PROP_NAME)
+        return prop.Value if prop is not None else None
+    except (pywintypes.com_error, AttributeError):
+        if strict:
+            raise PrivacySyncError("Cannot read mirror privacy state") from None
+        return None
+
+
+def set_privacy_version(item, value):
+    prop = item.UserProperties.Find(PRIVACY_PROP_NAME)
+    if prop is None:
+        prop = item.UserProperties.Add(PRIVACY_PROP_NAME, OL_USER_PROPERTY_TEXT)
+    prop.Value = value
+
+
+def clear_formatted_body(item):
+    """Reset via Outlook; verify RTF against an unsaved clean appointment."""
+    blank = item.Application.CreateItem(OL_APPOINTMENT_ITEM)
+    try:
+        blank.Body = ""
+        clean_rtf = bytes(blank.RTFBody)
+    finally:
+        blank.Close(1)
+    item.Body = ""
+    if bytes(item.RTFBody) != clean_rtf:
+        raise PrivacySyncError("Formatted body cleanup not confirmed", operation="verify_rtf")
+
+
+def needs_update(source, mirror, *, target_fields=None, separator=None,
+                 decision=SyncDecision.NORMAL):
     """Compare the exact desired values that copy_fields will write."""
     init()
     separator = separator or get_category_separator()
     if target_fields is None:
-        target_fields = get_target_fields(source, separator)
+        target_fields = get_target_fields(source, separator, decision=decision)
+    if decision is SyncDecision.ANONYMIZE:
+        try:
+            if get_privacy_version(mirror, strict=True) != PRIVACY_VERSION:
+                return True
+            if mirror.Recipients.Count:
+                return True
+        except (pywintypes.com_error, AttributeError):
+            raise PrivacySyncError("Cannot inspect anonymized mirror recipients") from None
+    elif get_privacy_version(mirror):
+        return True
     for field, expected in target_fields.items():
         try:
             if not field_values_equal(field, expected, getattr(mirror, field), separator):
                 return True
         except (pywintypes.com_error, AttributeError):
+            if decision is SyncDecision.ANONYMIZE:
+                raise PrivacySyncError("Cannot compare anonymized appointment fields") from None
             pass
     return False
 
 
-def create_mirror(source_item, dest_calendar, source_email):
+def save_mirror_fields(source, dest, target_fields, decision, *, source_id=None):
+    """Save only after full cleanup; discard in-memory edits on privacy failure."""
+    anonymous = decision is SyncDecision.ANONYMIZE
+    operation = "write_fields"
+    try:
+        copy_fields(source, dest, target_fields=target_fields, strict=anonymous)
+        if anonymous:
+            operation = "clear_recipients"
+            recipients = dest.Recipients
+            for index in range(recipients.Count, 0, -1):
+                recipients.Remove(index)
+            # Do not trust plain-text Body alone: verify Outlook's regenerated RTF.
+            operation = "clear_rtf"
+            clear_formatted_body(dest)
+            operation = "verify_cleanup"
+            if recipients.Count or dest.Body.rstrip() or any(getattr(dest, field) for field in (
+                "Location", "RequiredAttendees", "OptionalAttendees", "Resources"
+            )):
+                raise PrivacySyncError("Anonymized appointment cleanup incomplete")
+            separator = get_category_separator()
+            for field in ("Subject", "Categories", "ReminderSet", "MeetingStatus"):
+                if not field_values_equal(field, target_fields[field], getattr(dest, field), separator):
+                    raise PrivacySyncError("Anonymized appointment target not applied")
+            operation = "set_privacy_version"
+            set_privacy_version(dest, PRIVACY_VERSION)
+        elif get_privacy_version(dest):
+            set_privacy_version(dest, "")
+        if source_id is not None:
+            operation = "set_source_identity"
+            set_mirror_source_id(dest, source_id)
+        operation = "save"
+        dest.Save()
+    except Exception as exc:
+        if not anonymous:
+            raise
+        try:
+            dest.Close(1)  # olDiscard: never save partially anonymized edits.
+        except Exception:
+            pass
+        raise PrivacySyncError(
+            "Anonymized mirror could not be saved; cleanup not confirmed",
+            operation=getattr(exc, "operation", None) or operation,
+            hresult=getattr(exc, "hresult", None),
+            error_code=(exc.excepinfo[5] if isinstance(exc, pywintypes.com_error)
+                        and exc.excepinfo else None),
+        ) from None
+
+
+def create_mirror(source_item, dest_calendar, source_email, *, decision=SyncDecision.NORMAL):
     """Create a new mirrored appointment in the destination calendar."""
     init()
     source_id = build_source_id(source_email, source_item.EntryID, source_item.Start)
-    subject = source_item.Subject
+    subject = "[anonymized appointment]" if decision is SyncDecision.ANONYMIZE else source_item.Subject
 
     if config.DRY_RUN:
         log.info("  [DRY RUN] Would CREATE mirror: %s", subject)
         return
 
     separator = get_category_separator()
-    target_fields = get_target_fields(source_item, separator)
+    target_fields = get_target_fields(source_item, separator, decision=decision)
     new_appt = dest_calendar.Items.Add(OL_APPOINTMENT_ITEM)
-    copy_fields(source_item, new_appt, target_fields=target_fields)
-    set_mirror_source_id(new_appt, source_id)
-    new_appt.Save()
+    save_mirror_fields(source_item, new_appt, target_fields, decision, source_id=source_id)
     log.info("  Created mirror: %s", subject)
 
 
-def update_mirror(source_item, mirror_item):
+def update_mirror(source_item, mirror_item, *, decision=SyncDecision.NORMAL):
     """Update an existing mirror if fields have changed."""
     init()
-    subject = source_item.Subject
+    subject = "[anonymized appointment]" if decision is SyncDecision.ANONYMIZE else source_item.Subject
 
     separator = get_category_separator()
-    target_fields = get_target_fields(source_item, separator)
+    target_fields = get_target_fields(source_item, separator, decision=decision)
     if not needs_update(source_item, mirror_item, target_fields=target_fields,
-                        separator=separator):
+                        separator=separator, decision=decision):
         log.debug("  No changes for: %s", subject)
         return
 
@@ -543,8 +658,7 @@ def update_mirror(source_item, mirror_item):
         log.info("  [DRY RUN] Would UPDATE mirror: %s", subject)
         return
 
-    copy_fields(source_item, mirror_item, target_fields=target_fields)
-    mirror_item.Save()
+    save_mirror_fields(source_item, mirror_item, target_fields, decision)
     log.info("  Updated mirror: %s", subject)
 
 
@@ -689,7 +803,6 @@ class SeriesCategoryResolver:
         return self._masters[key]
 
 
-
 def get_source_decision(item, resolver, separator):
     """Read marker data strictly; callers preserve copies on read failures."""
     categories = parse_categories(item.Categories, separator)
@@ -701,6 +814,7 @@ def get_source_decision(item, resolver, separator):
         categories,
         series_categories=resolver.get_categories(item),
         do_not_sync_category=exclusion,
+        secret_category=getattr(config, "SECRET_CATEGORY", "Secret"),
     )
 
 
@@ -709,11 +823,15 @@ def _sync_window(source_calendar, dest_calendar, source_email, start_date, end_d
     init()
     separator = get_category_separator()
     marker = getattr(config, "DO_NOT_SYNC_CATEGORY", "DoNotSync").strip()
-    if (not marker or separator in marker or marker.casefold() in {
-        config.MIRROR_CATEGORY.strip().casefold(),
-        getattr(config, "SECRET_CATEGORY", "Secret").strip().casefold(),
-    }):
-        raise ValueError("DoNotSync category must be a nonempty, distinct single name")
+    secret = getattr(config, "SECRET_CATEGORY", "Secret").strip()
+    mirror_category = config.MIRROR_CATEGORY.strip().casefold()
+    if (not marker or not secret or marker.casefold() == secret.casefold()
+            or mirror_category in {marker.casefold(), secret.casefold()}
+            or separator in marker or separator in secret):
+        raise ValueError("Privacy marker categories must be nonempty, distinct single names")
+    placeholder = getattr(config, "ANONYMIZED_SUBJECT", "Belegt")
+    if not isinstance(placeholder, str) or not placeholder.strip():
+        raise ValueError("Anonymized subject must be nonempty text")
     source_items = get_calendar_items(source_calendar, start_date, end_date)
     dest_items = get_calendar_items(dest_calendar, start_date, end_date)
     resolver = SeriesCategoryResolver(source_calendar, separator)
@@ -761,10 +879,10 @@ def _sync_window(source_calendar, dest_calendar, source_email, start_date, end_d
         try:
             mirror = find_mirror(dest_items, source_id)
             if mirror is None:
-                create_mirror(src_item, dest_calendar, source_email)
+                create_mirror(src_item, dest_calendar, source_email, decision=decision)
             else:
-                update_mirror(src_item, mirror)
-        except (pywintypes.com_error, AttributeError):
+                update_mirror(src_item, mirror, decision=decision)
+        except (pywintypes.com_error, AttributeError, PrivacySyncError):
             log.warning("  Cannot sync appointment; existing copy may require cleanup")
             continue
 
