@@ -16,7 +16,9 @@ from datetime import datetime, timedelta
 import win32com.client
 import pywintypes
 
-from sync_policy import build_target_fields, field_values_equal
+from sync_policy import (
+    SyncDecision, build_target_fields, decide_sync, field_values_equal, parse_categories,
+)
 
 
 def _get_app_dir():
@@ -388,17 +390,15 @@ def get_calendar_items(calendar_folder, start_date, end_date):
     results = []
     item = restricted.GetFirst()
     while item is not None:
-        try:
-            # Only sync appointments (class 26 = olAppointment)
-            if item.Class == 26:
-                results.append(item)
-        except pywintypes.com_error:
-            pass
+        # Abort incomplete reads: silently missing a source item would make its
+        # existing copy appear orphaned and eligible for deletion.
+        if item.Class == 26:
+            results.append(item)
         item = restricted.GetNext()
     return results
 
 
-def get_mirror_source_id(item):
+def get_mirror_source_id(item, *, strict=False):
     """Read the MirrorSourceID UserProperty from an item, or return None."""
     try:
         props = item.UserProperties
@@ -406,7 +406,8 @@ def get_mirror_source_id(item):
         if prop is not None:
             return prop.Value
     except (pywintypes.com_error, AttributeError):
-        pass
+        if strict:
+            raise
     return None
 
 
@@ -435,7 +436,7 @@ def build_source_id(source_email, entry_id, start=None):
 def find_mirror(dest_items, source_id):
     """Find a mirrored item in the destination by its MirrorSourceID."""
     for item in dest_items:
-        if get_mirror_source_id(item) == source_id:
+        if get_mirror_source_id(item, strict=True) == source_id:
             return item
     return None
 
@@ -547,10 +548,12 @@ def update_mirror(source_item, mirror_item):
     log.info("  Updated mirror: %s", subject)
 
 
-def delete_mirror(mirror_item):
+def delete_mirror(mirror_item, *, excluded=False):
     """Delete a mirrored item whose source no longer exists."""
     init()
-    subject = mirror_item.Subject
+    # A missing original cannot tell us whether an old copy was marked Secret.
+    # Redact all deletion labels, including legacy copies with sensitive titles.
+    subject = "[excluded appointment]" if excluded else "[mirror appointment]"
 
     if config.DRY_RUN:
         log.info("  [DRY RUN] Would DELETE mirror: %s", subject)
@@ -622,11 +625,98 @@ def sync_one_direction(source_account, dest_account, source_email):
         _sync_window(source_calendar, dest_calendar, source_email, chunk_start, chunk_end)
 
 
+class SeriesCategoryResolver:
+    """Resolve masters in the source folder, without expanding infinite series.
+
+    The clean global object ID is shared by master, occurrences and exceptions.
+    Cache only within one window; failure to build the index never yields a
+    partial result that could incorrectly permit an appointment to sync.
+    """
+
+    CLEAN_GLOBAL_ID = (
+        "http://schemas.microsoft.com/mapi/id/"
+        "{6ED8DA90-450B-101B-98DA-00AA003F1305}/00230102"
+    )
+
+    def __init__(self, calendar, separator):
+        self.calendar = calendar
+        self.separator = separator
+        self._masters = None
+
+    @classmethod
+    def series_key(cls, item):
+        try:
+            value = item.PropertyAccessor.GetProperty(cls.CLEAN_GLOBAL_ID)
+        except pywintypes.com_error as exc:
+            code = exc.excepinfo[5] if exc.excepinfo else exc.hresult
+            if code != -2147221233:  # MAPI_E_NOT_FOUND on virtual occurrences.
+                raise
+            value = bytes.fromhex(item.GlobalAppointmentID)
+            header = bytes.fromhex("040000008200E00074C5B7101A82E008")
+            if (len(value) < 40 or value[:16] != header
+                    or int.from_bytes(value[36:40], "little") != len(value) - 40):
+                raise ValueError("Invalid global appointment identifier")
+            # MS-OXOCAL: clean IDs zero the instance's YH/YL/M/D date bytes.
+            value = value[:16] + bytes(4) + value[20:]
+        if not isinstance(value, (bytes, bytearray, memoryview, tuple, list)) or not value:
+            raise ValueError("Missing clean series identifier")
+        return bytes(value)
+
+    def get_categories(self, item):
+        state = item.RecurrenceState
+        if state == 0:
+            return []
+        if state == 1:
+            return parse_categories(item.Categories, self.separator)
+        if state not in (2, 3):
+            raise ValueError("Unknown recurrence state")
+        key = self.series_key(item)
+        if self._masters is None:
+            masters = {}
+            items = self.calendar.Items
+            items.IncludeRecurrences = False
+            master = items.GetFirst()
+            while master is not None:
+                if master.Class == 26 and master.RecurrenceState == 1:
+                    master_key = self.series_key(master)
+                    if master_key in masters:
+                        raise ValueError("Ambiguous series master")
+                    masters[master_key] = parse_categories(master.Categories, self.separator)
+                master = items.GetNext()
+            self._masters = masters
+        if key not in self._masters:
+            raise ValueError("Series master not found in source calendar")
+        return self._masters[key]
+
+
+
+def get_source_decision(item, resolver, separator):
+    """Read marker data strictly; callers preserve copies on read failures."""
+    categories = parse_categories(item.Categories, separator)
+    exclusion = getattr(config, "DO_NOT_SYNC_CATEGORY", "DoNotSync")
+    # A local exclusion is conclusive even if its series master is unavailable.
+    if decide_sync(categories, do_not_sync_category=exclusion) is SyncDecision.EXCLUDE:
+        return SyncDecision.EXCLUDE
+    return decide_sync(
+        categories,
+        series_categories=resolver.get_categories(item),
+        do_not_sync_category=exclusion,
+    )
+
+
 def _sync_window(source_calendar, dest_calendar, source_email, start_date, end_date):
     """Create/update/delete mirrors for a single date window."""
     init()
+    separator = get_category_separator()
+    marker = getattr(config, "DO_NOT_SYNC_CATEGORY", "DoNotSync").strip()
+    if (not marker or separator in marker or marker.casefold() in {
+        config.MIRROR_CATEGORY.strip().casefold(),
+        getattr(config, "SECRET_CATEGORY", "Secret").strip().casefold(),
+    }):
+        raise ValueError("DoNotSync category must be a nonempty, distinct single name")
     source_items = get_calendar_items(source_calendar, start_date, end_date)
     dest_items = get_calendar_items(dest_calendar, start_date, end_date)
+    resolver = SeriesCategoryResolver(source_calendar, separator)
 
     log.info(
         "  Source items: %d, Dest items: %d", len(source_items), len(dest_items)
@@ -634,15 +724,18 @@ def _sync_window(source_calendar, dest_calendar, source_email, start_date, end_d
 
     # Track which source IDs are still valid (for orphan cleanup)
     valid_source_ids = set()
+    excluded_source_ids = set()
+    cleanup_safe = True
 
     # Create or update mirrors
     for src_item in source_items:
         # Skip items that are themselves mirrors (created by a previous sync)
         try:
-            if get_mirror_source_id(src_item) is not None:
+            if get_mirror_source_id(src_item, strict=True) is not None:
                 continue
-        except (pywintypes.com_error, AttributeError) as exc:
-            log.warning("  Skipping item due to error: %s", exc)
+        except (pywintypes.com_error, AttributeError):
+            cleanup_safe = False
+            log.warning("  Cannot read source mirror marker; orphan cleanup disabled")
             continue
 
         # Mark the source ID valid as soon as it's known (before any risky
@@ -650,34 +743,46 @@ def _sync_window(source_calendar, dest_calendar, source_email, start_date, end_d
         # already-mirrored, still-existing item look like an orphan.
         try:
             source_id = build_source_id(source_email, src_item.EntryID, src_item.Start)
-        except (pywintypes.com_error, AttributeError) as exc:
-            log.warning("  Skipping item due to error: %s", exc)
+        except (pywintypes.com_error, AttributeError):
+            cleanup_safe = False
+            log.warning("  Cannot identify source item; orphan cleanup disabled")
             continue
         valid_source_ids.add(source_id)
 
+        try:
+            decision = get_source_decision(src_item, resolver, separator)
+        except (pywintypes.com_error, AttributeError, ValueError, TypeError):
+            log.warning("  Cannot resolve source privacy markers; preserving existing copy")
+            continue
+        if decision is SyncDecision.EXCLUDE:
+            excluded_source_ids.add(source_id)
+            log.info("  Excluding appointment marked DoNotSync")
+            continue
         try:
             mirror = find_mirror(dest_items, source_id)
             if mirror is None:
                 create_mirror(src_item, dest_calendar, source_email)
             else:
                 update_mirror(src_item, mirror)
-        except (pywintypes.com_error, AttributeError) as exc:
-            log.warning("  Skipping item due to error: %s", exc)
+        except (pywintypes.com_error, AttributeError):
+            log.warning("  Cannot sync appointment; existing copy may require cleanup")
             continue
 
     # Delete orphaned mirrors (source meeting was deleted)
     for dest_item in dest_items:
         try:
-            mirror_id = get_mirror_source_id(dest_item)
+            mirror_id = get_mirror_source_id(dest_item, strict=True)
             if mirror_id is None:
                 continue
             # Only clean up mirrors that originated from this source account
             if not mirror_id.startswith(source_email + "::"):
                 continue
-            if mirror_id not in valid_source_ids:
+            if mirror_id in excluded_source_ids:
+                delete_mirror(dest_item, excluded=True)
+            elif cleanup_safe and mirror_id not in valid_source_ids:
                 delete_mirror(dest_item)
-        except (pywintypes.com_error, AttributeError) as exc:
-            log.warning("  Skipping item during orphan cleanup due to error: %s", exc)
+        except (pywintypes.com_error, AttributeError):
+            log.warning("  Skipping unreadable destination during cleanup")
             continue
 
 
