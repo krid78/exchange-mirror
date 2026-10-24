@@ -26,6 +26,7 @@
 - 🙈 **Non-intrusive mirrors** — mirrored items are created as non-meeting entries with reminders disabled, so they never send invitations or trigger alerts
 - 🏷️ **Clearly marked** — mirrors get a configurable subject prefix (`[Mirror] `) and Outlook category (`Mirrored`) so they're easy to spot and filter
 - 🚫 **Exclude appointments** — the `DoNotSync` category prevents mirroring and removes existing copies within the sync window
+- 🔒 **Hide appointment details** — use the `Secret` category for individual appointments or series, or anonymize all mirrors from Settings
 - 🧪 **Dry-run mode** — preview exactly what would be created/updated/deleted before making any real changes
 - 📅 **Flexible sync window** — relative (past/future days) or fixed date range, automatically split into chunks to avoid Outlook COM timeouts on large ranges
 - 🧹 **Automatic cleanup** — deleted source meetings remove their mirror copies; orphaned mirrors are cleaned up safely, scoped per account direction
@@ -96,21 +97,41 @@ The sync runs on a timer (default: every 15 minutes) and covers a configurable d
 
 ## Exclusion and Privacy
 
-Apply the `DoNotSync` category to an original appointment or to its recurring
-series to exclude it from synchronization. Names are matched in full without
-regard to case; `DoNotSyncLater` does not match `DoNotSync`.
+Apply privacy categories to the original appointment, or to the series for
+recurring appointments. Names are matched in full without regard to case.
 
-Existing matching copies are removed on the next successful sync within the
-configured date window. Removing the category allows a copy to be created
-again. Copies outside the window are not retroactively removed.
+| Original category | Result in the other calendar |
+|---|---|
+| `DoNotSync` | No copy; existing matching copies are removed |
+| `Secret` | Anonymized copy |
+| Neither | Normal appointment details |
+| Both | Exclusion takes precedence |
 
-Series markers apply to occurrences and changed exceptions. Where Outlook COM
-does not support category assignment to individual occurrences or exceptions,
-apply the category to the whole series or to a non-recurring appointment.
+An anonymized copy has the title `[Mirror] Belegt` by default. Description,
+formatted content, location, original categories, required/optional attendees
+and resource participants are cleared. Only the configured mirror category
+remains. Times, duration, all-day status, availability, sensitivity and source
+identity are retained; reminders and invitations remain disabled.
 
-Use Dry Run Mode to preview exclusion and deletion without changing calendars.
-If a marker cannot be read reliably, existing copies are preserved and the
-affected appointment is skipped rather than treated as deleted.
+Adding `Secret` also clears details from existing copies on the next successful
+sync within the date window. Removing it restores normal details. Removing
+`DoNotSync` allows copying again with the applicable category policy. Copies
+outside the window are not retroactively cleared or removed.
+
+Series markers apply to all occurrences, including changed exceptions. Where
+Outlook COM does not support category assignment to individual occurrences or
+exceptions, use the whole series or a non-recurring appointment.
+
+Category names and the replacement subject can be customized in `config.py`.
+Names must be nonempty and distinct from each other and the mirror category.
+The subject must be nonempty text. Use Dry Run Mode to preview changes without
+writing calendars. Anonymized actions and deletion messages omit original
+titles; old log entries are not retroactively cleared.
+
+If Outlook cannot resolve a policy or complete cleanup, the app skips the
+affected work and reports a warning. An old copy may retain details until a
+successful sync. Anonymization is not a general scrubber for arbitrary metadata
+or attachments manually added to a copy. The original remains unchanged.
 
 ## Account Setup
 
@@ -148,6 +169,8 @@ automatically on upgrade.
 | `MIRROR_SUBJECT_PREFIX` | `[Mirror] ` | Prefix added to mirrored items (set to `""` to disable) |
 | `MIRROR_CATEGORY` | `Mirrored` | Outlook category for mirrored items (set to `""` to disable) |
 | `DO_NOT_SYNC_CATEGORY` | `DoNotSync` | Original category that excludes an appointment or series; config-file setting |
+| `SECRET_CATEGORY` | `Secret` | Original category that anonymizes an appointment or series; config-file setting |
+| `ANONYMIZED_SUBJECT` | `Belegt` | Replacement title before applying the mirror prefix; config-file setting |
 | `ACCOUNT_A` / `ACCOUNT_B` | *(empty)* | SMTP address or display name of accounts to sync (see Account Setup) |
 | `START_ON_WINDOWS_LOGIN` | `False` | Start Exchange Mirror automatically when Windows starts |
 
@@ -260,4 +283,7 @@ If you like this project, support further development with a repost or coffee:
 
 ---
 
-**Privacy Notice**: Exchange Mirror operates entirely locally via Outlook COM automation. No calendar data is sent to any external server — all sync happens directly between the two Outlook accounts already configured on your machine.
+**Privacy Notice**: Exchange Mirror runs locally through Outlook COM and does
+not use a separate sync service. Mirrored data is saved to the configured
+destination account and handled by that account's calendar provider. Use the
+privacy controls above to choose which appointments and details are mirrored.
