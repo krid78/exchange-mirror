@@ -1,9 +1,21 @@
 @echo off
+setlocal
+cd /d "%~dp0"
 echo === Building exchange-mirror ===
+
+rem Honor an explicit compiler path, then discover user/system installations.
+if not defined ISCC_EXE if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC_EXE=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
+if not defined ISCC_EXE if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC_EXE=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if not defined ISCC_EXE if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC_EXE=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if not defined ISCC_EXE for /f "delims=" %%I in ('where ISCC.exe 2^>nul') do if not defined ISCC_EXE set "ISCC_EXE=%%I"
+if not exist "%ISCC_EXE%" (
+    echo Inno Setup 6 compiler not found. Install it or set ISCC_EXE to ISCC.exe.
+    exit /b 1
+)
 
 echo.
 echo Installing dependencies...
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 if errorlevel 1 (
     echo.
     echo DEPENDENCY INSTALL FAILED
@@ -41,7 +53,7 @@ copy /Y config.py dist\mirror\config.py
 
 echo.
 echo Building installer...
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+"%ISCC_EXE%" installer.iss
 if errorlevel 1 (
     echo.
     echo INSTALLER BUILD FAILED
