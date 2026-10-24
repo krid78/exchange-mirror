@@ -25,6 +25,7 @@
 - 🪪 **Deduplication-safe** — every mirror carries a hidden `MirrorSourceID` marker, so mirrors are never re-mirrored into infinite copies
 - 🙈 **Non-intrusive mirrors** — mirrored items are created as non-meeting entries with reminders disabled, so they never send invitations or trigger alerts
 - 🏷️ **Clearly marked** — mirrors get a configurable subject prefix (`[Mirror] `) and Outlook category (`Mirrored`) so they're easy to spot and filter
+- 🚫 **Exclude appointments** — the `DoNotSync` category prevents mirroring and removes existing copies within the sync window
 - 🧪 **Dry-run mode** — preview exactly what would be created/updated/deleted before making any real changes
 - 📅 **Flexible sync window** — relative (past/future days) or fixed date range, automatically split into chunks to avoid Outlook COM timeouts on large ranges
 - 🧹 **Automatic cleanup** — deleted source meetings remove their mirror copies; orphaned mirrors are cleaned up safely, scoped per account direction
@@ -44,8 +45,8 @@ On first run, right-click the tray icon → **Settings...** to adjust your sync 
 
 Exchange Mirror performs a **bidirectional sync** between two Outlook accounts (Account A and Account B):
 
-- **A → B**: Every meeting in A's calendar gets a mirror copy created in B's calendar
-- **B → A**: Every meeting in B's calendar gets a mirror copy created in A's calendar
+- **A → B**: Eligible appointments in A's calendar get mirror copies in B's calendar
+- **B → A**: Eligible appointments in B's calendar get mirror copies in A's calendar
 - **Updates**: When a source meeting changes (time, subject, location, etc.), the mirror copy is updated automatically
 - **Deletes**: When a source meeting is deleted, the mirror copy is removed
 - **Deduplication**: Each mirror is tagged with a hidden `MirrorSourceID` property linking it back to its source, so mirrors are never re-mirrored
@@ -53,6 +54,24 @@ Exchange Mirror performs a **bidirectional sync** between two Outlook accounts (
 Mirrored items are marked with a subject prefix (default: `[Mirror] `) and an Outlook category (default: `Mirrored`) so you can easily distinguish them. Mirrors are created as non-meeting items with reminders disabled, so they won't send invitations or trigger alerts.
 
 The sync runs on a timer (default: every 15 minutes) and covers a configurable date window.
+
+## Exclusion and Privacy
+
+Apply the `DoNotSync` category to an original appointment or to its recurring
+series to exclude it from synchronization. Names are matched in full without
+regard to case; `DoNotSyncLater` does not match `DoNotSync`.
+
+Existing matching copies are removed on the next successful sync within the
+configured date window. Removing the category allows a copy to be created
+again. Copies outside the window are not retroactively removed.
+
+Series markers apply to occurrences and changed exceptions. Where Outlook COM
+does not support category assignment to individual occurrences or exceptions,
+apply the category to the whole series or to a non-recurring appointment.
+
+Use Dry Run Mode to preview exclusion and deletion without changing calendars.
+If a marker cannot be read reliably, existing copies are preserved and the
+affected appointment is skipped rather than treated as deleted.
 
 ## Account Setup
 
@@ -89,6 +108,7 @@ automatically on upgrade.
 | `LOG_FILE` | `mirror.log` | Log filename (created next to the exe) |
 | `MIRROR_SUBJECT_PREFIX` | `[Mirror] ` | Prefix added to mirrored items (set to `""` to disable) |
 | `MIRROR_CATEGORY` | `Mirrored` | Outlook category for mirrored items (set to `""` to disable) |
+| `DO_NOT_SYNC_CATEGORY` | `DoNotSync` | Original category that excludes an appointment or series; config-file setting |
 | `ACCOUNT_A` / `ACCOUNT_B` | *(empty)* | SMTP address or display name of accounts to sync (see Account Setup) |
 | `START_ON_WINDOWS_LOGIN` | `False` | Start Exchange Mirror automatically when Windows starts |
 

@@ -1,11 +1,26 @@
 """Pure synchronization rules; no Outlook or configuration-file access."""
 
+from enum import Enum
+
+
+class SyncDecision(Enum):
+    NORMAL = "normal"
+    EXCLUDE = "exclude"
+
 
 def parse_categories(value, separator):
     """Parse complete names using Outlook's regional list separator."""
     if not separator:
         raise ValueError("Category separator must not be empty")
     return [name.strip() for name in (value or "").split(separator) if name.strip()]
+
+
+def decide_sync(categories, *, series_categories=(), do_not_sync_category="DoNotSync"):
+    """Combine occurrence and master categories, giving exclusion precedence."""
+    names = {name.strip().casefold() for name in (*categories, *series_categories)}
+    if do_not_sync_category.strip().casefold() in names:
+        return SyncDecision.EXCLUDE
+    return SyncDecision.NORMAL
 
 
 def build_target_fields(source_fields, *, subject_prefix, mirror_category,
