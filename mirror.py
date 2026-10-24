@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 import win32com.client
 import pywintypes
 
+from sync_policy import build_target_fields, field_values_equal
+
 
 def _get_app_dir():
     """Return the directory containing the executable (frozen) or script (dev)."""
@@ -422,66 +424,67 @@ def find_mirror(dest_items, source_id):
     return None
 
 
-def copy_fields(source, dest):
-    """Copy synced fields from source appointment to destination appointment."""
+def get_category_separator():
+    """Read the same regional list separator Outlook uses for Categories."""
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\International") as key:
+        separator, _ = winreg.QueryValueEx(key, "sList")
+    if not isinstance(separator, str) or not separator:
+        raise ValueError("Invalid Windows category list separator")
+    return separator
+
+
+def get_target_fields(source, separator):
+    """Snapshot source fields and calculate normal mirror values."""
     init()
+    source_fields = {}
     for field in SYNCED_FIELDS:
         try:
-            val = getattr(source, field)
-            setattr(dest, field, val)
+            source_fields[field] = getattr(source, field)
         except (pywintypes.com_error, AttributeError) as exc:
+            log.debug("Could not read field %s: %s", field, exc)
+    return build_target_fields(
+        source_fields, subject_prefix=config.MIRROR_SUBJECT_PREFIX,
+        mirror_category=config.MIRROR_CATEGORY, separator=separator,
+    )
+
+
+def copy_fields(source, dest, *, target_fields=None, separator=None):
+    """Write calculated target values, including markers and fixed flags."""
+    init()
+    if target_fields is None:
+        separator = separator or get_category_separator()
+        target_fields = get_target_fields(source, separator)
+    for field, value in target_fields.items():
+        try:
+            setattr(dest, field, value)
+        except (pywintypes.com_error, AttributeError) as exc:
+            if field in ("MeetingStatus", "ReminderSet"):
+                raise
             log.debug("Could not copy field %s: %s", field, exc)
 
 
 def apply_mirror_markers(item):
-    """Apply subject prefix and category to a mirrored item."""
+    """Apply marker values using the same calculation as the sync path."""
     init()
-    prefix = config.MIRROR_SUBJECT_PREFIX
-    if prefix and not item.Subject.startswith(prefix):
-        item.Subject = prefix + item.Subject
-
-    category = config.MIRROR_CATEGORY
-    if category:
-        existing = item.Categories or ""
-        cats = [c.strip() for c in existing.split(",") if c.strip()]
-        if category not in cats:
-            cats.append(category)
-            item.Categories = ", ".join(cats)
+    target = build_target_fields(
+        {"Subject": item.Subject, "Categories": item.Categories},
+        subject_prefix=config.MIRROR_SUBJECT_PREFIX,
+        mirror_category=config.MIRROR_CATEGORY, separator=get_category_separator(),
+    )
+    item.Subject = target["Subject"]
+    item.Categories = target["Categories"]
 
 
-def needs_update(source, mirror):
-    """Check if any synced field differs between source and its mirror."""
+def needs_update(source, mirror, *, target_fields=None, separator=None):
+    """Compare the exact desired values that copy_fields will write."""
     init()
-    prefix = config.MIRROR_SUBJECT_PREFIX
-    category = config.MIRROR_CATEGORY
-
-    for field in SYNCED_FIELDS:
+    separator = separator or get_category_separator()
+    if target_fields is None:
+        target_fields = get_target_fields(source, separator)
+    for field, expected in target_fields.items():
         try:
-            src_val = getattr(source, field)
-            mir_val = getattr(mirror, field)
-
-            # Strip mirror markers before comparing so they don't
-            # trigger false positives.
-            if field == "Subject" and prefix:
-                if isinstance(mir_val, str) and mir_val.startswith(prefix):
-                    mir_val = mir_val[len(prefix):]
-
-            if field == "Categories" and category:
-                # Remove the mirror category from the mirror's list
-                cats = [c.strip() for c in (mir_val or "").split(",") if c.strip()]
-                if category in cats:
-                    cats.remove(category)
-                mir_val = ", ".join(cats)
-
-            if field == "Body":
-                # Outlook appends a trailing CRLF to Body on save; ignore
-                # trailing whitespace so this doesn't look like a real change.
-                if isinstance(src_val, str):
-                    src_val = src_val.rstrip()
-                if isinstance(mir_val, str):
-                    mir_val = mir_val.rstrip()
-
-            if src_val != mir_val:
+            if not field_values_equal(field, expected, getattr(mirror, field), separator):
                 return True
         except (pywintypes.com_error, AttributeError):
             pass
@@ -498,13 +501,11 @@ def create_mirror(source_item, dest_calendar, source_email):
         log.info("  [DRY RUN] Would CREATE mirror: %s", subject)
         return
 
+    separator = get_category_separator()
+    target_fields = get_target_fields(source_item, separator)
     new_appt = dest_calendar.Items.Add(OL_APPOINTMENT_ITEM)
-    copy_fields(source_item, new_appt)
+    copy_fields(source_item, new_appt, target_fields=target_fields)
     set_mirror_source_id(new_appt, source_id)
-    apply_mirror_markers(new_appt)
-    # Don't send meeting invitations from the mirror
-    new_appt.MeetingStatus = 0  # olNonMeeting
-    new_appt.ReminderSet = False
     new_appt.Save()
     log.info("  Created mirror: %s", subject)
 
@@ -514,7 +515,10 @@ def update_mirror(source_item, mirror_item):
     init()
     subject = source_item.Subject
 
-    if not needs_update(source_item, mirror_item):
+    separator = get_category_separator()
+    target_fields = get_target_fields(source_item, separator)
+    if not needs_update(source_item, mirror_item, target_fields=target_fields,
+                        separator=separator):
         log.debug("  No changes for: %s", subject)
         return
 
@@ -522,10 +526,7 @@ def update_mirror(source_item, mirror_item):
         log.info("  [DRY RUN] Would UPDATE mirror: %s", subject)
         return
 
-    copy_fields(source_item, mirror_item)
-    apply_mirror_markers(mirror_item)
-    mirror_item.MeetingStatus = 0
-    mirror_item.ReminderSet = False
+    copy_fields(source_item, mirror_item, target_fields=target_fields)
     mirror_item.Save()
     log.info("  Updated mirror: %s", subject)
 
