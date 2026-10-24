@@ -17,7 +17,8 @@ def parse_categories(value, separator):
 
 
 def decide_sync(categories, *, series_categories=(),
-                do_not_sync_category="DoNotSync", secret_category="Secret"):
+                do_not_sync_category="DoNotSync", secret_category="Secret",
+                anonymize_all=False):
     """Combine already-resolved occurrence and master categories.
 
     Callers must resolve required series data successfully before calling;
@@ -26,7 +27,7 @@ def decide_sync(categories, *, series_categories=(),
     names = {name.strip().casefold() for name in (*categories, *series_categories)}
     if do_not_sync_category.strip().casefold() in names:
         return SyncDecision.EXCLUDE
-    if secret_category.strip().casefold() in names:
+    if anonymize_all or secret_category.strip().casefold() in names:
         return SyncDecision.ANONYMIZE
     return SyncDecision.NORMAL
 

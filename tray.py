@@ -110,6 +110,9 @@ class SettingsDialog:
         self._v_prefix     = tk.StringVar(value=cfg.MIRROR_SUBJECT_PREFIX)
         self._v_category   = tk.StringVar(value=cfg.MIRROR_CATEGORY)
         self._v_dry_run    = tk.BooleanVar(value=cfg.DRY_RUN)
+        self._v_anonymize_all = tk.BooleanVar(value=cfg.ANONYMIZE_ALL)
+        self._anonymized_subject = cfg.ANONYMIZED_SUBJECT
+        self._secret_category = cfg.SECRET_CATEGORY
         self._v_startup    = tk.BooleanVar(value=mirror.is_startup_enabled())
         self._v_log_file   = tk.StringVar(value=cfg.LOG_FILE)
         self._v_account_a  = tk.StringVar(value=cfg.ACCOUNT_A or "")
@@ -231,6 +234,20 @@ class SettingsDialog:
 
         self._row(markers, "Subject prefix:", ttk.Entry(markers, textvariable=self._v_prefix,   width=20), 0)
         self._row(markers, "Category:",       ttk.Entry(markers, textvariable=self._v_category, width=20), 1)
+
+        privacy = ttk.LabelFrame(tab, text="Privacy", padding=8)
+        privacy.pack(fill="x", pady=(0, 8))
+        ttk.Checkbutton(privacy, text="Anonymize all mirrored appointments",
+                        variable=self._v_anonymize_all).pack(anchor="w")
+        ttk.Label(
+            privacy,
+            text=(f"Use '{self._anonymized_subject}' as the title; hide description, location, "
+                  "source categories and attendees.\n"
+                  "Changes apply on the next sync within the configured date window. "
+                  f"Turning this off restores details unless the appointment has the "
+                  f"'{self._secret_category}' category."),
+            wraplength=490, justify="left", foreground="gray",
+        ).pack(anchor="w", pady=(4, 0))
 
         # Dry Run
         ttk.Checkbutton(tab, text="Dry Run Mode (log changes without applying them)",
@@ -396,6 +413,7 @@ class SettingsDialog:
                 "MIRROR_SUBJECT_PREFIX": self._v_prefix.get(),
                 "MIRROR_CATEGORY":       self._v_category.get(),
                 "DRY_RUN":               self._v_dry_run.get(),
+                "ANONYMIZE_ALL":         self._v_anonymize_all.get(),
                 "START_ON_WINDOWS_LOGIN": self._v_startup.get(),
                 "LOG_FILE":              self._v_log_file.get().strip() or "mirror.log",
                 "ACCOUNT_A":             self._extract_account(self._v_account_a.get()),

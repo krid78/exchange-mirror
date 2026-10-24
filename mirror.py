@@ -815,6 +815,7 @@ def get_source_decision(item, resolver, separator):
         series_categories=resolver.get_categories(item),
         do_not_sync_category=exclusion,
         secret_category=getattr(config, "SECRET_CATEGORY", "Secret"),
+        anonymize_all=getattr(config, "ANONYMIZE_ALL", False),
     )
 
 
