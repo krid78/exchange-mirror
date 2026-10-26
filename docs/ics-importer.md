@@ -28,6 +28,7 @@ and daylight-saving-aware duration handling.
 Step 5 expands regular event recurrence sets in an explicit finite date window.
 Step 6 resolves source revisions and overlays detached exceptions and cancellations.
 Step 7 adds a bounded HTTPS download API in `ics_http.py`.
+Step 8 adds validated JSON profiles and explicit source/destination changes.
 There is no importer command, UI or Outlook write path yet.
 The existing Exchange Mirror behavior is unchanged.
 
@@ -215,3 +216,24 @@ fail with `FeedDownloadError`; they never become an empty successful snapshot.
 text/calendar, text/plain and application/octet-stream are accepted only with a valid
 calendar envelope. Diagnostics exclude URLs, query tokens and raw transport errors.
 The optional opener injection is a trusted testing seam, not an alternate security policy.
+
+## Profiles (step 8)
+
+`ImportProfile` stores a stable UUID, display name, HTTPS source URL, concrete
+`Destination` (store ID, folder ID, display name), floating-timezone name and an
+exclusive date window. The timezone name is structurally validated here; resolving
+it against IANA data or embedded VTIMEZONE definitions belongs to parsing.
+
+`load_profiles()` / `save_profiles()` default to
+`%APPDATA%\Exchange Mirror\ics-importer\profiles.json`; an explicit path is accepted
+for tests. Missing files mean no profiles. Invalid JSON, unknown schema/fields,
+duplicate UUIDs/JSON fields and malformed profile values fail without resetting or
+rewriting the file. This is JSON data, never executable Python configuration.
+
+Writes validate all records first, write/flush/fsync a temporary file in the same
+directory and atomically replace the destination. A failed replace retains the old
+file. This is atomic file replacement, not concurrent-writer coordination; locking
+is a later step. Profile files contain the source URL and must not be logged or
+committed. `update_profile` requires explicit confirmation for URL or destination
+changes and preserves the UUID, including when renewing a query token. It does not
+migrate existing Outlook items or infer that two URLs refer to the same calendar.
