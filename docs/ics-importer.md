@@ -31,11 +31,12 @@ Step 7 adds a bounded HTTPS download API in `ics_http.py`.
 Step 8 adds validated JSON profiles and explicit source/destination changes.
 Step 9 adds pure target projection and create/update/unchanged/conflict planning.
 Step 10 adds coverage-aware deletion candidates and explicit confirmation gates.
+Step 11 adds the read-only classic Outlook adapter in `ics_outlook.py`.
 There is no importer command, UI or Outlook write path yet.
 The existing Exchange Mirror behavior is unchanged.
 
-Later steps will connect real Outlook inventories and operations, user interface,
-coordination and packaging in individually reviewable changes.
+Later steps will add Outlook write operations, user interface, coordination and
+packaging in individually reviewable changes.
 
 ## Event identity contract
 
@@ -305,3 +306,55 @@ Only confirmed, unblocked candidates enter `operations` as DELETE. No candidate 
 selected by title, category or account display name, and nothing deletes from another
 folder or profile. Future execution must revalidate ownership and freshness and honor
 the same safety conditions; those adapter/coordinator steps are not implemented here.
+
+## Read-only Outlook inventory (step 11)
+
+`outlook_session()` attaches to an already running classic Outlook instance using
+pywin32, initializes COM on the caller's thread and releases it on exit. It neither
+starts the tray application nor loads Mirror configuration. No account-count check
+is made: one Outlook account is sufficient. The context yields an `OutlookReader`
+which must remain on that thread and cannot be used after closing. The Windows
+category separator is read from HKCU and parsed with the existing pure
+`sync_policy.parse_categories` helper. pywin32 is an importer dependency on Windows;
+the module's fake-adapter tests do not require a real COM server.
+
+`describe_calendar(folder)` reads the concrete destination IDs and display path.
+`read_inventory(destination)` resolves by both folder and store ID and validates
+the result's identity and calendar item type. Missing/changed/non-calendar folders
+fail. Resolution never uses a display-name fallback. This establishes readability,
+not permission to write; write checks belong to subsequent adapter steps.
+
+The inventory scans the entire folder without date filtering. The Items collection
+view has IncludeRecurrences=False to avoid expanding infinite native series; this
+does not modify an appointment. A default 100,000-item limit, iterator failures,
+changed counts or duplicate EntryIDs abort the whole read. Count checks detect some
+concurrent changes, not an atomic Outlook snapshot; later execution still needs
+freshness checks. Duplicate importer source identities are retained as separate
+records for the planner's conflict detection.
+
+All four importer markers are custom text UserProperties:
+
+| Name | Value |
+| --- | --- |
+| `IcsImportProfileId` | Canonical profile UUID |
+| `IcsImportIdentity` | Complete canonical v1 `EventIdentity.serialize()` output |
+| `IcsImportEventKey` | Matching SHA-256 identity key |
+| `IcsImportSchemaVersion` | Positive canonical decimal text, currently `1` |
+
+The full identity is necessary to recover UID and original occurrence slot for
+updates/cancellations; its hash alone cannot provide them. Partial, malformed or
+inconsistent markers fail the inventory. A readable identity with another positive
+schema number remains visible as an unsupported-schema planner conflict. Completely
+unmarked items become `UnmanagedItem` without reading their appointment content;
+MirrorSourceID is never interpreted as importer ownership.
+
+Marked objects must be nonrecurring appointments. Managed fields and flags are
+read into `TargetState`; timed values use Outlook StartUTC/EndUTC as UTC wall-clock
+COM dates, while all-day Start/End retain their exclusive date boundaries. Property
+access errors are never treated as absent markers or skipped items. Errors omit
+raw calendar content. This adapter contains no Add, Save, Delete or Send path.
+
+References: [folder IDs](https://learn.microsoft.com/en-us/office/vba/api/outlook.namespace.getfolderfromid),
+[custom property lookup](https://learn.microsoft.com/en-us/office/vba/api/outlook.userproperties.find),
+[UTC start](https://learn.microsoft.com/en-us/office/vba/api/outlook.appointmentitem.startutc),
+[recurrence views](https://learn.microsoft.com/en-us/office/vba/api/outlook.items.includerecurrences).
