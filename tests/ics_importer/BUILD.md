@@ -48,8 +48,8 @@ It does not call calendar selection, source transport or Outlook write operation
 
 This workstation still has Python installed. Removing Python from PATH and using
 the frozen runtime verifies the portable bundle here; an independent Windows
-machine with no Python installation has **not** been tested. Interactive EXE
-usability review remains with the user. No Outlook integration test was repeated
+machine with no Python installation has **not** been tested. The user subsequently
+reported that the importer and EXE work as expected (2026-10-26). No Outlook integration test was repeated
 for packaging: the offline smoke imports the COM runtime but does not attach to
 Outlook. Existing real-COM acceptance evidence remains in [ACCEPTANCE.md](ACCEPTANCE.md).
 

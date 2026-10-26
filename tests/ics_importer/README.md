@@ -1,5 +1,12 @@
 # ICS importer test foundation
 
+## Documentation and delivery (step 20)
+
+[RELEASE.md](RELEASE.md) records the fresh-profile walkthrough, branch/dependency
+audit, feature/test commit separation, real-feed exclusion checks and user acceptance
+of the EXE. This documentation-only step adds no behavioral test; the existing 214
+tests were rerun and passed.
+
 ## Standalone build (step 19)
 
 See [BUILD.md](BUILD.md) for the portable executable smoke test, exact environment
