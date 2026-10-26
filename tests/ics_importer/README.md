@@ -1,5 +1,37 @@
 # ICS importer test foundation
 
+## Run coordination and process locks (step 15)
+
+`test_run.py` connects synthetic feeds to a stateful in-memory adapter. It covers
+read-only preview, unchanged reruns, Create/Update-before-Delete ordering, source/
+target/profile freshness, metadata-only changes, enumeration order, explicit empty-
+snapshot approvals, pending deletions, conflict blocking, cancellation and partial
+receipts. Failed/uncertain writes must not retry or proceed to deletion. Changed
+source/target state or failed capture before deletion must stop that phase.
+
+Restart tests simulate a persisted Create followed by an error or SystemExit before
+the receipt: a fresh inventory finds the existing identity and does not create a
+second copy. This is a stateful adapter interruption test, not a real COM-server
+crash test. Other cases verify snapshot-local custom zones/BOM input, generator
+materialization and source-URL redaction in failures/logs. Read-session tests now
+also reject nested COM sessions before a second CoInitialize call.
+
+`test_lock.py` uses actual OS locks and independent Python processes. A competing
+process cannot acquire the same profile/destination, a different destination can,
+and os._exit releases the lock without deleting its empty file. Children have a
+15-second test timeout; no Outlook or network access is used by these tests.
+
+Authorized real integration check on 2026-10-26 in **Exchange Mirror Importer Test**:
+synthetic transport data plus real COM first created two items. Changing the source
+after preview returned REVIEW_REQUIRED without writes. After renewed review, one
+Create, one Update and one Delete completed; another identical run was Unchanged
+for both remaining items. Cleanup removed the two remaining synthetic items, leaving
+the test calendar empty. No production appointment was edited or message sent.
+An initial harness incorrectly retained COM objects across nested sessions and failed
+before writes; the corrected harness uses only plain destination IDs between sessions.
+The product session API now rejects that unsupported nesting explicitly. The live
+test did not kill Outlook or test server-side free/busy publication.
+
 ## Single-item deletion (step 14)
 
 `test_outlook_delete.py` checks confirmation/operation shape, scoped deletion with

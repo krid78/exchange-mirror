@@ -181,6 +181,9 @@ class OutlookReadTests(TestCase):
             with self.assertRaisesRegex(RuntimeError, "body error"):
                 with outlook_session() as adapter:
                     self.assertEqual(adapter.read_inventory(profile().destination).items, ())
+                    with self.assertRaises(OutlookReadError):
+                        with outlook_session():
+                            self.fail("Nested sessions must be rejected before COM initialization")
                     raise RuntimeError("body error")
             self.assertIsNone(adapter._namespace)
             com.CoInitialize.assert_called_once()
@@ -194,6 +197,15 @@ class OutlookReadTests(TestCase):
                 with outlook_session():
                     self.fail("Must not yield on connection failure")
             com.CoUninitialize.assert_called_once()
+            com.CoUninitialize.reset_mock()
+            win32.client.GetActiveObject.side_effect = SystemExit("interrupted during connection")
+            with self.assertRaises(SystemExit):
+                with outlook_session():
+                    self.fail("Must not yield on interrupted connection")
+            com.CoUninitialize.assert_called_once()
+            win32.client.GetActiveObject.side_effect = None
+            with outlook_session() as reopened:
+                self.assertEqual(reopened.read_inventory(profile().destination).items, ())
 
     def test_reader_rejects_cross_thread_com_access(self):
         adapter = reader(folder())
