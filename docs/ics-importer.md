@@ -36,11 +36,10 @@ Step 12 adds an explicit single-appointment create and verification path.
 Step 13 adds optimistic in-place updates of verified owned appointments.
 Step 14 adds confirmed single-item deletes with ownership and readback checks.
 Step 15 connects fetch, parse, preview and execution through a guarded run coordinator.
-There is no importer command or UI yet.
+Step 16 adds a manually started, preview-only Tk GUI.
 The existing Exchange Mirror behavior is unchanged.
 
-Later steps will add user interface and
-packaging in individually reviewable changes.
+Later steps will add GUI execution/results and packaging in individually reviewable changes.
 
 ## Event identity contract
 
@@ -514,3 +513,43 @@ The coordinator retains no COM objects between preview and execution. Session,
 transport and parser seams support offline harnesses; production defaults use the
 existing HTTPS parser and guarded Outlook adapter. Preview and execute must run
 outside any already-open `outlook_session` on the same thread.
+
+## Preview GUI (step 16)
+
+Start from the project directory with `.venv\Scripts\python.exe ics_importer.py`
+after installing `requirements-importer.txt`. Classic Outlook must be running for
+calendar selection and preview. `--profiles PATH` optionally selects another JSON
+profiles file; this does not relocate the coordinator's per-user run locks.
+
+The window offers saved profiles, New/Save profile, a HTTPS ICS URL, native Outlook
+calendar selection, From/Until ISO dates, a floating-timezone setting and **Build
+preview**. A new draft defaults to the current calendar year with an exclusive
+Until date of January 1 of the following year. Its UUID remains stable through
+previews and saving. Startup only loads the profiles file; it neither reads Outlook
+nor downloads a feed. Profiles are saved only on the explicit Save action.
+
+The selected folder is resolved by concrete IDs. Account/store and default-calendar
+classification are shown; additional or unverified calendars carry a free/busy
+notice. Cancelling Outlook's picker retains the previous selection. Missing or
+non-calendar folders are errors, never a reason to guess another destination.
+Display-name refreshes for unchanged store/folder IDs do not require a mapping
+confirmation. Actual source/destination changes do; source changes clear export
+coverage while retaining profile identity. Corrupt profiles disable saving to
+preserve the original file; repair it and restart before saving again.
+
+Read operations run on a worker which initializes its own COM sessions. Tk and
+dialogs stay on the main thread; the worker returns only plain metadata and preview
+records through a queue. Controls prevent a second simultaneous read. Late results
+for changed inputs are discarded. Closing during a read waits responsively for it
+to finish; cancel a still-open native Outlook folder dialog there. No unsafe thread
+termination or in-flight COM interruption is attempted.
+
+The scrollable table shows New/Update/Unchanged/Conflict entries and pending deletion
+candidates with review notes and counts. Selecting a row shows its complete review
+note below the table; labels wrap when the window is resized. Times are shown in the named IANA profile
+zone, or explicitly UTC when a custom zone cannot be resolved locally for display.
+All-day end dates stay exclusive. Input edits invalidate the old preview. Errors
+show static actionable messages without raw URLs/query tokens. There is no GUI
+execute button and no call to `ImportCoordinator.execute` in this step; profile
+file writes are the only user-requested persistence from the window. No appointment
+is created, updated, deleted or sent by the GUI.

@@ -70,9 +70,14 @@ class ImportProfile:
 def update_profile(profile, *, source_url=None, destination=None,
                    confirm_source_change=False, confirm_destination_change=False):
     """Explicit mapping changes; confirmation is supplied by the future UI/caller."""
+    if destination is not None and not isinstance(destination, Destination):
+        raise ProfileError("Expected a concrete destination")
     if source_url is not None and source_url != profile.source_url and confirm_source_change is not True:
         raise ProfileError("Source change requires explicit confirmation")
-    if destination is not None and destination != profile.destination and confirm_destination_change is not True:
+    target_changed = destination is not None and (
+        destination.store_id.casefold(), destination.folder_id.casefold()) != (
+        profile.destination.store_id.casefold(), profile.destination.folder_id.casefold())
+    if target_changed and confirm_destination_change is not True:
         raise ProfileError("Destination change requires explicit confirmation")
     return replace(profile, source_url=profile.source_url if source_url is None else source_url,
                    destination=profile.destination if destination is None else destination,

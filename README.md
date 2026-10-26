@@ -186,6 +186,26 @@ nonempty text. Category lists use the Windows regional list separator.
 **Want to remove all mirrored items**
 - Filter your calendar by the `Mirrored` category and delete them, or search for the `[Mirror]` subject prefix
 
+## Manual ICS Importer (Preview)
+
+A separate preview-only tool can inspect a public ICS source against a selected
+Outlook calendar. Start classic Outlook, then run from the project directory:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-importer.txt
+.\.venv\Scripts\python.exe .\ics_importer.py
+```
+
+Enter a profile name and HTTPS ICS URL, choose the destination calendar, set the
+date range (the Until date is exclusive), and click **Build preview**. Profiles
+can be saved for later use. The app shows proposed additions, updates, unchanged
+items, conflicts and pending removals. **This version does not change appointments
+and has no synchronization button yet.** For Exchange free/busy, prefer the
+intended account's default calendar; an additional calendar may not affect it.
+
+See [the importer documentation](docs/ics-importer.md) for profile storage,
+preview behavior and the current implementation scope.
+
 ## Building from Source
 
 Requires Python 3.10+, and [Inno Setup 6](https://jrsoftware.org/isinfo.php) for the installer.

@@ -62,6 +62,13 @@ class DeletedAppointment:
     identity: EventIdentity
 
 
+@dataclass(frozen=True)
+class CalendarChoice:
+    destination: Destination
+    store_name: str
+    is_default: bool | None
+
+
 def _decode_identity(serialized):
     value = json.loads(serialized)
     if (not isinstance(value, list) or len(value) != 4 or value[0] != "ics-event-v1"
@@ -149,6 +156,41 @@ def describe_calendar(folder):
         raise
     except Exception:
         raise OutlookReadError("Cannot describe the selected calendar") from None
+
+
+def _calendar_choice(folder):
+    destination = describe_calendar(folder)
+    store = folder.Store
+    name = str(store.DisplayName)
+    try:
+        default = describe_calendar(store.GetDefaultFolder(9))
+        is_default = (default.store_id.casefold(), default.folder_id.casefold()) == (
+            destination.store_id.casefold(), destination.folder_id.casefold())
+    except Exception:
+        is_default = None
+    return CalendarChoice(destination, name, is_default)
+
+
+def pick_calendar():
+    """Native Outlook picker; call on a worker thread, return only plain metadata."""
+    with outlook_session() as reader:
+        try:
+            folder = reader._namespace.PickFolder()
+            return None if folder is None else _calendar_choice(folder)
+        except OutlookReadError:
+            raise
+        except Exception:
+            raise OutlookReadError("Cannot select an Outlook calendar") from None
+
+
+def inspect_calendar(destination):
+    with outlook_session() as reader:
+        try:
+            return _calendar_choice(reader.resolve_calendar(destination))
+        except OutlookReadError:
+            raise
+        except Exception:
+            raise OutlookReadError("Cannot inspect the selected Outlook calendar") from None
 
 
 class OutlookReader:
