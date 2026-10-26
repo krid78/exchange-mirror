@@ -1,12 +1,13 @@
-"""Classic Outlook inventory and explicit single-create adapter; no mirror setup."""
+"""Classic Outlook inventory and guarded single-item writes; no mirror setup."""
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 import json
 import threading
 from uuid import UUID
 
-from ics_model import EventFields, EventIdentity, TargetState
+from ics_model import EventFields, EventIdentity, EventStatus, OperationKind, SyncOperation, TargetState
 from ics_profiles import Destination
 from ics_sync import TargetInventory, UnmanagedItem, project_event, target_matches
 from sync_policy import parse_categories
@@ -45,6 +46,19 @@ class OutlookUpdateError(RuntimeError):
         super().__init__("Appointment update or verification failed; re-read inventory before retrying")
         self.save_attempted = save_attempted
         self.entry_id = entry_id
+
+
+class OutlookDeleteError(RuntimeError):
+    def __init__(self, *, entry_id):
+        super().__init__("Appointment deletion or verification failed; re-read inventory before retrying")
+        self.delete_attempted = True
+        self.entry_id = entry_id
+
+
+@dataclass(frozen=True)
+class DeletedAppointment:
+    entry_id: str
+    identity: EventIdentity
 
 
 def _decode_identity(serialized):
@@ -343,6 +357,35 @@ class OutlookWriter(OutlookReader):
                 except Exception:
                     pass
             raise OutlookUpdateError(save_attempted=save_attempted, entry_id=expected.entry_id) from None
+
+    def delete_appointment(self, destination, operation, *, confirmed=False):
+        """Execute one confirmed planned DELETE; never infer deletion authority here."""
+        if confirmed is not True:
+            raise ValueError("Deleting requires explicit confirmation of the planned operation")
+        if (not isinstance(operation, SyncOperation) or operation.kind is not OperationKind.DELETE
+                or len(operation.targets) != 1
+                or (operation.source is not None and operation.source.status is not EventStatus.CANCELLED)):
+            raise ValueError("Expected one planned DELETE with no active source")
+        expected = operation.targets[0]
+        appointment, observed = self._open_expected(destination, expected)
+        try:
+            recipient_count = appointment.Recipients.Count
+        except Exception:
+            raise OutlookReadError("Cannot verify the target's recipient state") from None
+        if observed.meeting_status != 0 or recipient_count != 0:
+            raise OutlookWriteConflict("Only ordinary recipient-free imports can be deleted")
+        try:
+            appointment.Delete()
+            inventory = self.read_inventory(destination)
+            if any(item.entry_id.casefold() == expected.entry_id.casefold()
+                   or (isinstance(item, TargetState) and item.identity == expected.identity)
+                   for item in inventory.items):
+                raise ValueError("Deleted identity is still present or has reappeared")
+            return DeletedAppointment(expected.entry_id, expected.identity)
+        except Exception:
+            # Delete may already have moved the item to Deleted Items. Never retry,
+            # re-create it, or interpret a failed verification read as success.
+            raise OutlookDeleteError(entry_id=expected.entry_id) from None
 
 
 @contextmanager

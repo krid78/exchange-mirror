@@ -34,10 +34,11 @@ Step 10 adds coverage-aware deletion candidates and explicit confirmation gates.
 Step 11 adds the read-only classic Outlook adapter in `ics_outlook.py`.
 Step 12 adds an explicit single-appointment create and verification path.
 Step 13 adds optimistic in-place updates of verified owned appointments.
-There is no importer command, UI, delete adapter or run coordinator yet.
+Step 14 adds confirmed single-item deletes with ownership and readback checks.
+There is no importer command, UI or run coordinator yet.
 The existing Exchange Mirror behavior is unchanged.
 
-Later steps will add Outlook delete operations, user interface, coordination and
+Later steps will add user interface, coordination and
 packaging in individually reviewable changes.
 
 ## Event identity contract
@@ -374,8 +375,8 @@ schema raises `OutlookCreateConflict` without writes; this API does not update.
 The unsaved appointment receives source text, categories, dates and every identity
 marker before its first Save. Marker fields are added to the item only, not the
 folder's field registry. BusyStatus is always 2, ReminderSet is False and
-MeetingStatus is 0. Unexpected recipients cause an abort before Save. No invitation,
-response, Send or Delete path exists in the writer.
+MeetingStatus is 0. Unexpected recipients cause an abort before Save. The create
+path never sends invitations/responses or invokes Delete.
 
 Timed UTC values retain an explicit UTC timezone tag when passed to pywin32;
 naive Python datetimes can be converted through the machine timezone. All-day
@@ -423,3 +424,31 @@ failures are uncertain outcomes, not successful updates or implicit retries. A
 failure before Save attempts to discard only unsaved edits. These optimistic checks
 do not provide a transaction or eliminate all races with other clients; run-level
 coordination remains step 15.
+
+## Confirmed single-item deletion (step 14)
+
+`delete_appointment(destination, operation, confirmed=True)` accepts exactly one
+planned DELETE with a single expected target. The caller must provide an operation
+emitted by the confirmed deletion planner; the low-level adapter does not infer
+export authority or absence from the source. It rejects active-source operations,
+other operation kinds and missing confirmation before any mutation.
+
+As with updates, the full inventory is reread and the exact expected state must
+still be unique. The item is reopened by EntryID/StoreID, then destination, canonical
+profile/event markers, supported schema and all observed fields/flags are checked
+again. Missing/stale/moved/unmarked targets, unsaved edits and marker errors abort.
+Only ordinary MeetingStatus=0 appointments with no recipients can be deleted;
+meeting objects are blocked rather than risking cancellation messages. There is
+no fallback by subject/category or another calendar/account.
+
+One Delete call is followed by a complete inventory read. Only if both the EntryID
+and source identity are absent does the method return a `DeletedAppointment`
+receipt. A remaining/reappearing identity or failed verification raises
+`OutlookDeleteError` with `delete_attempted=True` and the expected EntryID. Errors
+never cause a second Delete, replacement Create, Save or an assumed success.
+Retrying an old operation after a successful deletion is a stale-state conflict.
+
+Deletion uses normal Outlook behavior (typically moving to Deleted Items); it does
+not purge Deleted Items or promise permanent/server-wide erasure. The method performs
+no Send operation. Run-level sequencing, source freshness and cross-process locking
+remain step 15 concerns; these optimistic checks are not a transaction with other clients.
