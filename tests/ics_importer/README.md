@@ -6,10 +6,23 @@ Run from the repository root on Windows:
 .\.venv\Scripts\python.exe -m unittest discover -s tests/ics_importer -p "test_*.py" -v
 ```
 
-Only the Python standard library is needed. The tests do not import the application,
+Only the Python standard library is needed. The tests import the pure `ics_model`
+module, but do not import the tray/mirror application,
 connect to Outlook, download a feed, or modify calendars. No additional packages or
 credentials are required. This branch had no existing automated tests when step 1
-was added; this command runs the initial importer suite.
+was added; this command runs the importer suite.
+
+## Model contracts (step 2)
+
+`test_model.py` covers versioned identity encoding, distinct profiles/UIDs/slots,
+opaque Unicode/escaped UIDs, equivalent UTC instants, date versus date-time,
+microsecond precision, and stable keys after edits/rescheduling. It also checks
+normalized fields, exclusive all-day ends, invalid/floating times, cancellation
+tombstones, source revisions, immutable records, target flags and conflict evidence.
+The operation records reject source/target identities that do not match their key.
+
+These are model contracts only: there is no HTTP, parser, synchronization planner
+or Outlook adapter under test yet.
 
 ## Fixtures
 
