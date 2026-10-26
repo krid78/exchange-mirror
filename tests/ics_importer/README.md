@@ -1,5 +1,24 @@
 # ICS importer test foundation
 
+## Read-only Outlook adapter (step 11)
+
+`test_outlook_read.py` uses fake namespaces, folders, collections, custom properties
+and items. It covers concrete folder resolution with no Accounts dependency, full
+unfiltered inventory, unmarked items without content access, UTC/all-day semantics,
+canonical identity decoding, partial/corrupt markers, field/property/iterator errors,
+limits/count inconsistencies, duplicate EntryIDs, preserved duplicate source keys,
+unknown-schema conflicts, closed sessions and cross-thread rejection. Session fakes
+verify COM cleanup after connection and context-body failures. Save/Delete fakes must
+never be called. The repeatable test suite does not attach to Outlook.
+
+Separate authorized read-only check on 2026-10-26 using pywin32 312 outside the
+sandbox: the running Outlook instance's **Mein Stundenplan** calendar resolved by
+its concrete IDs and yielded 87 items. Counts before, in the inventory and after
+were all 87; all were unmanaged by this importer. No Add/Save/Delete/Send operation
+was performed. This proves read connectivity and the unmarked inventory path, not
+write permission, persistence of new markers or the real marked-item roundtrip;
+those require the later isolated write tests.
+
 ## Deletion planning (step 10)
 
 `test_deletions.py` checks confirmed versus missing/partial coverage, explicit
