@@ -3,13 +3,15 @@
 Run from the repository root on Windows:
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-importer.txt
 .\.venv\Scripts\python.exe -m unittest discover -s tests/ics_importer -p "test_*.py" -v
 ```
 
-Only the Python standard library is needed. The tests import the pure `ics_model`
-module, but do not import the tray/mirror application,
-connect to Outlook, download a feed, or modify calendars. No additional packages or
-credentials are required. This branch had no existing automated tests when step 1
+The parser tests need the dependencies from `requirements-importer.txt`; package
+installation requires network access once. The test run itself is entirely offline.
+The tests import `ics_model` and `ics_source`, but do not import the tray/mirror application,
+connect to Outlook, download a feed, or modify calendars. No credentials or further
+test packages are required. This branch had no existing automated tests when step 1
 was added; this command runs the importer suite.
 
 ## Model contracts (step 2)
@@ -21,8 +23,21 @@ normalized fields, exclusive all-day ends, invalid/floating times, cancellation
 tombstones, source revisions, immutable records, target flags and conflict evidence.
 The operation records reject source/target identities that do not match their key.
 
-These are model contracts only: there is no HTTP, parser, synchronization planner
-or Outlook adapter under test yet.
+These are model contracts only; parser behavior is covered separately below.
+
+## Singleton parser (step 3)
+
+`test_source.py` checks minimal and multiple events, UTF-8/folding/escapes,
+categories and optional defaults, DTEND/DURATION, exclusive DATE ends, revisions,
+tentative status and cancellation tombstones. Invalid or duplicate scalar fields,
+bad times, partial snapshots, HTML, unexpected components and duplicate identities
+must fail the entire parse instead of returning a partial event list.
+
+UTC/date parsing is supported; floating/TZID timestamps, the timezone-bearing
+timetable fixture and recurrence properties must currently fail explicitly.
+Source alarms and attendees are not copied. LF/CRLF and UTF-8 BOM inputs are covered.
+These tests do not prove HTTP, time-zone conversion, recurrence expansion, planning
+or Outlook behavior; those belong to later steps.
 
 ## Fixtures
 
