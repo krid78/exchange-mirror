@@ -1,9 +1,14 @@
 """Offline conversion of a complete ICS snapshot into importer records."""
 
 from datetime import date, datetime, timedelta, timezone
+import re
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
+from dateutil.tz import datetime_ambiguous, datetime_exists
 from icalendar import Calendar
+from icalendar.parser import Contentline
+from icalendar.timezone import TZP
 
 from ics_model import EventFields, EventIdentity, EventStatus, SourceEvent
 
@@ -31,20 +36,47 @@ def _utc_datetime(component, name, *, required=False):
     return value.astimezone(timezone.utc)
 
 
-def _event_time(component, name):
-    prop = _single(component, name, required=True)
-    if prop.params.get("TZID"):
-        raise IcsParseError("TZID support is not implemented yet")
-    value = prop.dt
-    if isinstance(value, datetime):
-        if value.utcoffset() != timedelta(0):
-            raise IcsParseError("Only UTC event timestamps are supported yet")
-    elif not isinstance(value, date):
-        raise IcsParseError(f"Invalid {name} value")
+def _resolve_zone(name, zones):
+    if name in zones:
+        return zones[name]
+    try:
+        return ZoneInfo(name)
+    except (KeyError, ValueError):
+        raise IcsParseError("Unknown timezone") from None
+
+
+def _localize(value, zone):
+    value = value.replace(tzinfo=zone, fold=0)
+    if not datetime_exists(value):
+        raise IcsParseError("Nonexistent local time at a timezone transition")
+    if datetime_ambiguous(value):
+        raise IcsParseError("Ambiguous local time; specify UTC instead")
     return value
 
 
-def _parse_event(event, profile_id):
+def _event_time(component, name, zones, floating_zone, raw_properties):
+    prop = _single(component, name, required=True)
+    tzid = prop.params.get("TZID")
+    raw_params, raw_value = raw_properties[name]
+    if tzid is not None and (raw_params.get("VALUE") == "DATE" or raw_value.endswith("Z")):
+        raise IcsParseError("TZID is only allowed on local DATE-TIME values")
+    value = prop.dt
+    if isinstance(value, datetime):
+        if tzid is not None:
+            # Re-resolve against this snapshot, not icalendar's global TZID cache.
+            value = _localize(value.replace(tzinfo=None), _resolve_zone(str(tzid), zones))
+        elif value.utcoffset() is None:
+            if floating_zone is None:
+                raise IcsParseError("Floating time requires an explicit profile timezone")
+            value = _localize(value, floating_zone)
+    elif not isinstance(value, date):
+        raise IcsParseError(f"Invalid {name} value")
+    elif tzid is not None:
+        raise IcsParseError("DATE values must not have TZID")
+    return value
+
+
+def _parse_event(event, profile_id, zones, floating_zone, raw_properties):
     for name in ("RRULE", "RDATE", "EXDATE", "RECURRENCE-ID", "EXRULE"):
         if name in event:
             raise IcsParseError("Recurring events are not supported yet")
@@ -64,10 +96,12 @@ def _parse_event(event, profile_id):
         raise IcsParseError("DTEND and DURATION are mutually exclusive")
     fields = None
     if "DTSTART" in event:
-        start = _event_time(event, "DTSTART")
+        start = _event_time(event, "DTSTART", zones, floating_zone, raw_properties)
         if "DTEND" in event:
-            end = _event_time(event, "DTEND")
-            if isinstance(start, datetime) == isinstance(end, datetime) and end <= start:
+            end = _event_time(event, "DTEND", zones, floating_zone, raw_properties)
+            comparable_start = start.astimezone(timezone.utc) if isinstance(start, datetime) else start
+            comparable_end = end.astimezone(timezone.utc) if isinstance(end, datetime) else end
+            if isinstance(start, datetime) == isinstance(end, datetime) and comparable_end <= comparable_start:
                 raise IcsParseError("Explicit DTEND must follow DTSTART")
         elif "DURATION" in event:
             duration = _single(event, "DURATION").dt
@@ -75,7 +109,7 @@ def _parse_event(event, profile_id):
                 raise IcsParseError("DURATION must be positive")
             if not isinstance(start, datetime) and duration.seconds:
                 raise IcsParseError("DATE events require a whole-day duration")
-            end = start + duration
+            end = _duration_end(start, raw_properties["DURATION"][1])
         else:
             end = start if isinstance(start, datetime) else start + timedelta(days=1)
         categories = event.get("CATEGORIES", [])
@@ -91,6 +125,61 @@ def _parse_event(event, profile_id):
     elif status is not EventStatus.CANCELLED or "DTEND" in event or "DURATION" in event:
         raise IcsParseError("Missing DTSTART property")
     return SourceEvent(identity, fields, status, sequence, modified or stamp)
+
+
+def _duration_end(start, token):
+    # Preserve nominal days versus exact hours: P1D and PT24H differ across DST.
+    match = re.fullmatch(r"\+?P(?:(\d+)W|(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?)", token or "")
+    if match is None:
+        raise IcsParseError("Unsupported DURATION syntax")
+    weeks, days, hours, minutes, seconds = (int(v or 0) for v in match.groups())
+    clock = timedelta(hours=hours, minutes=minutes, seconds=seconds)
+    if not isinstance(start, datetime) and (hours or minutes or seconds):
+        raise IcsParseError("DATE events require nominal days or weeks")
+    end = start + timedelta(days=7 * weeks + days)
+    if isinstance(end, datetime):
+        end = _localize(end.replace(tzinfo=None), start.tzinfo)
+        end = end.astimezone(timezone.utc) + clock
+    return end
+
+
+def _event_time_tokens(text):
+    """Retain lexical time details lost by the library's normalization."""
+    lines = re.sub(r"\r?\n[ \t]", "", text).splitlines()
+    stack, properties = [], []
+    for line in lines:
+        upper = line.upper()
+        if upper.startswith("BEGIN:"):
+            stack.append(upper[6:])
+            if stack == ["VCALENDAR", "VEVENT"]:
+                properties.append({})
+        elif upper.startswith("END:"):
+            stack.pop()
+        elif stack == ["VCALENDAR", "VEVENT"]:
+            name, params, value = Contentline(line).parts()
+            name = name.upper()
+            if name in ("DTSTART", "DTEND", "DURATION"):
+                properties[-1][name] = (params, value)
+    return properties
+
+
+def _snapshot_zones(calendar):
+    zones = {}
+    for component in calendar.subcomponents:
+        if component.name != "VTIMEZONE":
+            continue
+        name = str(_single(component, "TZID", required=True))
+        if not name or name in zones:
+            raise IcsParseError("Empty or duplicate VTIMEZONE TZID")
+        if not component.subcomponents:
+            raise IcsParseError("VTIMEZONE requires an observance")
+        for observance in component.subcomponents:
+            if observance.name not in ("STANDARD", "DAYLIGHT") or observance.subcomponents:
+                raise IcsParseError("Invalid VTIMEZONE observance")
+            for field in ("DTSTART", "TZOFFSETFROM", "TZOFFSETTO"):
+                _single(observance, field, required=True)
+        zones[name] = component.to_tz(TZP(), lookup_tzid=False)
+    return zones
 
 
 def _check_envelope(text):
@@ -121,11 +210,11 @@ def _check_envelope(text):
         raise IcsParseError("Incomplete VCALENDAR")
 
 
-def parse_ics(data: bytes | str, profile_id: UUID) -> tuple[SourceEvent, ...]:
+def parse_ics(data: bytes | str, profile_id: UUID, *, floating_timezone: str | None = None) -> tuple[SourceEvent, ...]:
     """Parse all events or fail the complete snapshot; performs no I/O.
 
-    Step 3 supports UTC and DATE singleton events, not floating/TZID timestamps,
-    VTIMEZONE definitions, recurrence rules or multiple revisions of one UID.
+    Floating timestamps require a profile timezone; no machine-local fallback.
+    Event recurrence and multiple revisions of one UID remain unsupported.
     """
     if not isinstance(profile_id, UUID):
         raise TypeError("profile_id must be a UUID")
@@ -146,14 +235,18 @@ def parse_ics(data: bytes | str, profile_id: UUID) -> tuple[SourceEvent, ...]:
         for component in calendar.walk():
             if component.errors:
                 raise IcsParseError("Invalid calendar property")
-            if component.name not in ("VCALENDAR", "VEVENT", "VALARM"):
+            if component.name not in ("VCALENDAR", "VEVENT", "VALARM", "VTIMEZONE", "STANDARD", "DAYLIGHT"):
                 raise IcsParseError("Unsupported calendar component")
             if component.name == "VEVENT" and component.subcomponents:
                 if any(child.name != "VALARM" for child in component.subcomponents):
                     raise IcsParseError("Unsupported nested event component")
-        if any(child.name != "VEVENT" for child in calendar.subcomponents):
-            raise IcsParseError("Expected top-level VEVENT components")
-        events = tuple(_parse_event(event, profile_id) for event in calendar.subcomponents)
+        if any(child.name not in ("VEVENT", "VTIMEZONE") for child in calendar.subcomponents):
+            raise IcsParseError("Expected top-level VEVENT or VTIMEZONE components")
+        zones = _snapshot_zones(calendar)
+        floating_zone = _resolve_zone(floating_timezone, zones) if floating_timezone is not None else None
+        raw_properties = iter(_event_time_tokens(text))
+        events = tuple(_parse_event(event, profile_id, zones, floating_zone, next(raw_properties))
+                       for event in calendar.subcomponents if event.name == "VEVENT")
         if len({event.identity for event in events}) != len(events):
             raise IcsParseError("Duplicate source identity; revision resolution is not implemented yet")
         return events

@@ -1,2 +1,4 @@
 # Kept separate so developing the existing tray application needs no new package.
 icalendar==7.3.0
+python-dateutil==3.0.0
+tzdata==2026.5

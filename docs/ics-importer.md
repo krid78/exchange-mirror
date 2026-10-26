@@ -23,6 +23,8 @@ require two Outlook accounts or privacy settings.
 Steps 1 and 2 establish synthetic ICS examples, an offline test foundation and
 pure event/target/operation records in `ics_model.py`.
 Step 3 adds offline parsing of simple VEVENTs in `ics_source.py`.
+Step 4 adds snapshot-local TZID/VTIMEZONE resolution, explicit floating-time zones
+and daylight-saving-aware duration handling.
 There is no importer command, UI, network client or Outlook write path yet.
 The existing Exchange Mirror behavior is unchanged.
 
@@ -64,10 +66,9 @@ uses the `icalendar` library, pinned independently of the existing application.
 
 The current subset supports one complete VERSION:2.0 publication calendar with
 PRODID, independent VEVENTs, required UID/DTSTAMP and DTSTART for active events.
-UTC timestamps and DATE values are accepted; floating times, TZID/VTIMEZONE,
-recurrences and multiple revisions of one UID are explicitly rejected until their
-planned steps. Consequently the timezone-bearing timetable fixture is not yet
-accepted. Folded lines and escaped text are decoded by the library.
+UTC timestamps and DATE values are accepted. Recurrences and multiple revisions
+of one UID remain explicitly rejected until their planned steps. Folded lines
+and escaped text are decoded by the library.
 
 DTEND and positive DURATION are alternatives. A missing end defaults to the same
 instant for timed events or the next exclusive date for all-day events. Missing
@@ -85,3 +86,33 @@ import subset, not a general RFC validator.
 
 Library references: [usage](https://icalendar.readthedocs.io/en/stable/usage.html),
 [parse errors](https://icalendar.readthedocs.io/en/stable/how-to/parse-errors.html).
+
+## Timezone and all-day contract (step 4)
+
+Event timestamps may use UTC or a TZID with an IANA timezone such as Europe/Berlin.
+Embedded VTIMEZONE definitions take precedence over installed timezone data and
+are rebuilt for each snapshot, including custom TZIDs. Missing/duplicate/broken
+definitions and unknown zone references fail the complete snapshot. A prior parse
+must not supply a cached custom zone to a later snapshot. `tzdata` provides IANA
+data on Windows; `python-dateutil` supplies transition validation. Both direct
+dependencies are recorded in `requirements-importer.txt`.
+
+Floating timestamps require the caller to pass `floating_timezone="Europe/Berlin"`
+(or a custom TZID defined in that snapshot) to `parse_ics`. The machine timezone
+and X-WR-TIMEZONE display metadata are never implicit defaults. Unknown TZIDs do
+not fall back to the profile zone. Ambiguous autumn times and nonexistent spring
+times are rejected with `IcsParseError`; the source must provide an unambiguous
+instant, for example UTC. This is an explicit conservative import policy rather
+than silently selecting one side of a transition.
+
+The model retains date-only all-day boundaries without timezone conversion; their
+end is exclusive and must follow their start. DATE cannot carry TZID or a clock
+duration. A missing all-day end means the following date. Timed explicit ends are
+compared as UTC instants, including when start and end straddle a transition.
+Durations apply nominal weeks/days in local calendar time, then exact hours,
+minutes and seconds on the UTC timeline. Thus P1D can span 23 or 25 hours at a
+daylight-saving transition, while PT24H always spans 24 hours. The parser preserves
+the original duration units rather than inferring them from a normalized timedelta.
+
+VTIMEZONE observance rules are accepted for timezone construction; they are not
+VEVENT recurrence support. The synthetic timetable fixture now parses successfully.
