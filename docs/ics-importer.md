@@ -29,6 +29,7 @@ Step 5 expands regular event recurrence sets in an explicit finite date window.
 Step 6 resolves source revisions and overlays detached exceptions and cancellations.
 Step 7 adds a bounded HTTPS download API in `ics_http.py`.
 Step 8 adds validated JSON profiles and explicit source/destination changes.
+Step 9 adds pure target projection and create/update/unchanged/conflict planning.
 There is no importer command, UI or Outlook write path yet.
 The existing Exchange Mirror behavior is unchanged.
 
@@ -237,3 +238,27 @@ is a later step. Profile files contain the source URL and must not be logged or
 committed. `update_profile` requires explicit confirmation for URL or destination
 changes and preserves the UUID, including when renewing a query token. It does not
 migrate existing Outlook items or infer that two URLs refer to the same calendar.
+
+## Upsert planning (step 9)
+
+`plan_upserts(profile, sources, inventory)` is a pure function over fully parsed
+source records and a complete `TargetInventory`. Destination identity is checked
+by store/folder IDs, not mutable display names. Source identities must belong to
+the selected profile. Inventory items are marked `TargetState` records or explicit
+`UnmanagedItem` records. A future adapter must abort on read/marker errors rather
+than misclassify unreadable items as unmanaged.
+
+`project_event` produces original public content with Busy=2, reminders off and
+MeetingStatus=0; source tentative status does not change these flags. Comparison
+ignores trailing body whitespace and category ordering/case, while checking all
+managed time/text/availability fields. Observed meeting status is now part of
+`TargetState` (default 0 for existing callers).
+
+The planner indexes the entire destination, so an existing item can be updated
+when its new start moves outside the window. Eligibility uses actual source start,
+original recurrence slot or existing target start in the profile window. Profile
+timezone data defines date membership; callers can supply `window_timezone` for a
+custom embedded timezone. Duplicate source/target identities or unsupported marker
+schemas produce conflicts instead of another copy. Foreign-profile and unmanaged
+items remain untouched. Cancelled or absent source records never cause deletion in
+this API; step 10 supplies a separate deletion-aware planner. Plans perform no writes.

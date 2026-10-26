@@ -122,6 +122,7 @@ class TargetState:
     busy_status: int
     reminder_set: bool
     marker_schema_version: int = 1
+    meeting_status: int = 0
 
 
 class OperationKind(Enum):
