@@ -25,6 +25,7 @@ pure event/target/operation records in `ics_model.py`.
 Step 3 adds offline parsing of simple VEVENTs in `ics_source.py`.
 Step 4 adds snapshot-local TZID/VTIMEZONE resolution, explicit floating-time zones
 and daylight-saving-aware duration handling.
+Step 5 expands regular event recurrence sets in an explicit finite date window.
 There is no importer command, UI, network client or Outlook write path yet.
 The existing Exchange Mirror behavior is unchanged.
 
@@ -66,8 +67,8 @@ uses the `icalendar` library, pinned independently of the existing application.
 
 The current subset supports one complete VERSION:2.0 publication calendar with
 PRODID, independent VEVENTs, required UID/DTSTAMP and DTSTART for active events.
-UTC timestamps and DATE values are accepted. Recurrences and multiple revisions
-of one UID remain explicitly rejected until their planned steps. Folded lines
+UTC timestamps and DATE values are accepted. Recurrence exceptions and multiple
+revisions of one UID remain explicitly rejected until their planned steps. Folded lines
 and escaped text are decoded by the library.
 
 DTEND and positive DURATION are alternatives. A missing end defaults to the same
@@ -114,5 +115,41 @@ minutes and seconds on the UTC timeline. Thus P1D can span 23 or 25 hours at a
 daylight-saving transition, while PT24H always spans 24 hours. The parser preserves
 the original duration units rather than inferring them from a normalized timedelta.
 
-VTIMEZONE observance rules are accepted for timezone construction; they are not
-VEVENT recurrence support. The synthetic timetable fixture now parses successfully.
+VTIMEZONE observance rules are used for timezone construction, independently of
+VEVENT recurrence expansion. The synthetic timetable fixture parses successfully.
+
+## Bounded recurrence sets (step 5)
+
+For an event carrying RRULE, RDATE or EXDATE, `parse_ics` requires `window_start`
+and `window_end` as `datetime.date` values, with an exclusive end. Membership uses
+the occurrence's start date in the DTSTART timezone (or the date itself for all-day
+events). This is a start-date expansion window, not an overlap query: an occurrence
+starting earlier but ending inside the window is not included. Nonrecurring events
+remain unfiltered at this parsing layer; final synchronization scope belongs to
+the later planner. Window changes do not authorize deletion.
+
+Example: `parse_ics(data, profile_id, window_start=date(2026, 10, 1),
+window_end=date(2026, 11, 1))` expands starts in October. Each result is an
+independent `SourceEvent` whose identity contains the original recurrence slot.
+No Outlook series or current-time-dependent default is created.
+
+The existing `python-dateutil` dependency supplies RRULE iteration. DTSTART and
+RDATE form a union with rule-generated starts; EXDATE takes precedence, even over
+DTSTART. Repeated dates collapse to one slot. Date/time types must match DTSTART;
+equivalent timed RDATE/EXDATE values are compared in the series timezone. Daily
+local times retain their wall-clock hour across DST, with the same rejection
+policy for ambiguous/nonexistent output times as other local timestamps.
+
+Explicit DTEND gives every occurrence the master's exact elapsed duration.
+DURATION retains its nominal-day versus exact-hour semantics for each occurrence.
+All-day starts and exclusive ends remain dates. Event exceptions using RECURRENCE-ID,
+EXRULE, RDATE periods, recurring cancellations, multiple RRULEs and duplicate master
+UIDs remain unsupported until explicitly addressed; they fail the whole snapshot.
+
+Defaults are 10,000 output events per snapshot and 100,000 iterated RRULE candidates
+per series (`max_occurrences` / `max_candidates`). Explicit date-list entries also
+count against the per-series candidate limit. Hitting a limit fails the entire parse,
+never returns a truncated successful snapshot. Iteration counts candidates from
+DTSTART, including those before the window; a very old dense series can therefore
+fail instead of completing. These are work/output guards, not a hard elapsed-time
+timeout inside the recurrence library. No additional package is introduced in step 5.

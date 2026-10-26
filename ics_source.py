@@ -1,16 +1,18 @@
 """Offline conversion of a complete ICS snapshot into importer records."""
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 import re
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from dateutil.tz import datetime_ambiguous, datetime_exists
-from icalendar import Calendar
+from icalendar import Calendar, vDDDTypes
 from icalendar.parser import Contentline
 from icalendar.timezone import TZP
 
 from ics_model import EventFields, EventIdentity, EventStatus, SourceEvent
+from ics_recurrence import expand_starts
 
 
 class IcsParseError(ValueError):
@@ -56,11 +58,14 @@ def _localize(value, zone):
 
 def _event_time(component, name, zones, floating_zone, raw_properties):
     prop = _single(component, name, required=True)
-    tzid = prop.params.get("TZID")
     raw_params, raw_value = raw_properties[name]
+    return _time_value(prop.dt, raw_params, raw_value, zones, floating_zone)
+
+
+def _time_value(value, raw_params, raw_value, zones, floating_zone):
+    tzid = raw_params.get("TZID")
     if tzid is not None and (raw_params.get("VALUE") == "DATE" or raw_value.endswith("Z")):
         raise IcsParseError("TZID is only allowed on local DATE-TIME values")
-    value = prop.dt
     if isinstance(value, datetime):
         if tzid is not None:
             # Re-resolve against this snapshot, not icalendar's global TZID cache.
@@ -70,16 +75,16 @@ def _event_time(component, name, zones, floating_zone, raw_properties):
                 raise IcsParseError("Floating time requires an explicit profile timezone")
             value = _localize(value, floating_zone)
     elif not isinstance(value, date):
-        raise IcsParseError(f"Invalid {name} value")
+        raise IcsParseError("Invalid event time value")
     elif tzid is not None:
         raise IcsParseError("DATE values must not have TZID")
     return value
 
 
 def _parse_event(event, profile_id, zones, floating_zone, raw_properties):
-    for name in ("RRULE", "RDATE", "EXDATE", "RECURRENCE-ID", "EXRULE"):
+    for name in ("RECURRENCE-ID", "EXRULE"):
         if name in event:
-            raise IcsParseError("Recurring events are not supported yet")
+            raise IcsParseError("Recurrence exceptions and EXRULE are not supported yet")
     identity = EventIdentity(profile_id, str(_single(event, "UID", required=True)))
     status_prop = _single(event, "STATUS")
     status_text = str(status_prop).upper() if status_prop is not None else "CONFIRMED"
@@ -158,9 +163,56 @@ def _event_time_tokens(text):
         elif stack == ["VCALENDAR", "VEVENT"]:
             name, params, value = Contentline(line).parts()
             name = name.upper()
-            if name in ("DTSTART", "DTEND", "DURATION"):
+            if name in ("RDATE", "EXDATE"):
+                properties[-1].setdefault(name, []).append((params, value))
+            elif name in ("DTSTART", "DTEND", "DURATION", "RRULE"):
                 properties[-1][name] = (params, value)
     return properties
+
+
+def _expand_event(component, source, zones, floating_zone, raw, window_start,
+                  window_end, max_occurrences, max_candidates):
+    if not any(name in component for name in ("RRULE", "RDATE", "EXDATE")):
+        return (source,)
+    if source.fields is None or source.status is EventStatus.CANCELLED:
+        raise IcsParseError("Recurring cancellations are not supported yet")
+    start = _event_time(component, "DTSTART", zones, floating_zone, raw)
+    dates = {}
+    for name in ("RDATE", "EXDATE"):
+        dates[name] = []
+        for params, values in raw.get(name, []):
+            if params.get("VALUE") == "PERIOD":
+                raise IcsParseError("RDATE periods are not supported yet")
+            for value in values.split(","):
+                decoded = vDDDTypes.from_ical(value)
+                value = _time_value(decoded, params, value, zones, floating_zone)
+                if isinstance(value, datetime) != isinstance(start, datetime):
+                    raise IcsParseError("Recurrence dates must match DTSTART value type")
+                if isinstance(value, datetime):
+                    # Use the same zone for set arithmetic and local window membership.
+                    value = value.astimezone(start.tzinfo)
+                    value = _localize(value.replace(tzinfo=None), start.tzinfo)
+                dates[name].append(value)
+    rule = _single(component, "RRULE")
+    rule_text = raw["RRULE"][1] if rule is not None else None
+    starts = expand_starts(start, rule_text, dates["RDATE"], dates["EXDATE"],
+                           window_start, window_end, max_occurrences=max_occurrences,
+                           max_candidates=max_candidates)
+    result = []
+    for slot in starts:
+        if isinstance(slot, datetime):
+            slot = _localize(slot.replace(tzinfo=None), slot.tzinfo)
+        if "DURATION" in component:
+            end = _duration_end(slot, raw["DURATION"][1])
+        else:
+            # An explicit DTEND supplies an exact duration, not a wall-clock end.
+            end = slot + (source.fields.end - source.fields.start)
+            if isinstance(slot, datetime):
+                end = slot.astimezone(timezone.utc) + (source.fields.end - source.fields.start)
+        identity = replace(source.identity, recurrence_id=slot)
+        result.append(replace(source, identity=identity,
+                              fields=replace(source.fields, start=slot, end=end)))
+    return tuple(result)
 
 
 def _snapshot_zones(calendar):
@@ -210,17 +262,27 @@ def _check_envelope(text):
         raise IcsParseError("Incomplete VCALENDAR")
 
 
-def parse_ics(data: bytes | str, profile_id: UUID, *, floating_timezone: str | None = None) -> tuple[SourceEvent, ...]:
+def parse_ics(data: bytes | str, profile_id: UUID, *, floating_timezone: str | None = None,
+              window_start: date | None = None, window_end: date | None = None,
+              max_occurrences: int = 10000, max_candidates: int = 100000) -> tuple[SourceEvent, ...]:
     """Parse all events or fail the complete snapshot; performs no I/O.
 
     Floating timestamps require a profile timezone; no machine-local fallback.
-    Event recurrence and multiple revisions of one UID remain unsupported.
+    Recurrences need a half-open local date window. Exceptions and multiple
+    revisions of one UID remain unsupported.
     """
     if not isinstance(profile_id, UUID):
         raise TypeError("profile_id must be a UUID")
     if not isinstance(data, (bytes, str)):
         raise TypeError("data must be bytes or text")
     try:
+        for limit in (max_occurrences, max_candidates):
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+                raise IcsParseError("Expansion limits must be positive integers")
+        if window_start is not None or window_end is not None:
+            if (type(window_start) is not date or type(window_end) is not date
+                    or window_end <= window_start):
+                raise IcsParseError("Expansion window must contain increasing dates")
         text = data.decode("utf-8-sig") if isinstance(data, bytes) else data.removeprefix("\ufeff")
         _check_envelope(text)
         calendar = Calendar.from_ical(text)
@@ -245,11 +307,23 @@ def parse_ics(data: bytes | str, profile_id: UUID, *, floating_timezone: str | N
         zones = _snapshot_zones(calendar)
         floating_zone = _resolve_zone(floating_timezone, zones) if floating_timezone is not None else None
         raw_properties = iter(_event_time_tokens(text))
-        events = tuple(_parse_event(event, profile_id, zones, floating_zone, next(raw_properties))
-                       for event in calendar.subcomponents if event.name == "VEVENT")
+        events = []
+        source_ids = set()
+        for component in calendar.subcomponents:
+            if component.name != "VEVENT":
+                continue
+            raw = next(raw_properties)
+            source = _parse_event(component, profile_id, zones, floating_zone, raw)
+            if source.identity in source_ids:
+                raise IcsParseError("Duplicate source identity; revision resolution is not implemented yet")
+            source_ids.add(source.identity)
+            events.extend(_expand_event(component, source, zones, floating_zone, raw,
+                                        window_start, window_end, max_occurrences, max_candidates))
+            if len(events) > max_occurrences:
+                raise IcsParseError("Snapshot occurrence limit exceeded")
         if len({event.identity for event in events}) != len(events):
             raise IcsParseError("Duplicate source identity; revision resolution is not implemented yet")
-        return events
+        return tuple(events)
     except IcsParseError:
         raise
     except (ValueError, TypeError, AttributeError, KeyError, OverflowError):
