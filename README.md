@@ -188,29 +188,101 @@ nonempty text. Category lists use the Windows regional list separator.
 
 ## Manual ICS Importer
 
-A separate manually started tool can synchronize a public ICS source into a selected
-Outlook calendar. Start classic Outlook, then run from the project directory:
+A separate, manually started tool synchronizes one public HTTPS ICS feed into one
+explicitly selected **classic Outlook for Windows** calendar. The source is
+authoritative: changed source events update imported appointments; local edits to
+their imported fields can be overwritten on the next run. Nothing is written back
+to the feed. Imported items are ordinary appointments, always **Busy**, with no
+invitations, tentative responses or reminders. They have no privacy options.
+
+### First import
+
+As a normal user, start `ics-importer.exe` from the complete portable distribution
+(see [Building from Source](#standalone-ics-importer)), or run the source checkout:
 
 ```powershell
+python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-importer.txt
 .\.venv\Scripts\python.exe .\ics_importer.py
 ```
 
-Enter a profile name and HTTPS ICS URL, choose the destination calendar, set the
-date range (the Until date is exclusive), and click **Build preview**. Save the
-profile before synchronization so its import identity survives restarts; saving
-unchanged preview inputs preserves the reviewed preview. The app shows proposed additions, updates, unchanged
-items, conflicts and pending removals. **Build preview** does not change appointments.
-Use **Synchronize preview** to confirm and apply the reviewed changes. Missing-event
-removal requires confirming that the source export is complete for the selected
-period; an empty source and unusually large removal need additional confirmation.
-**Cancel run** stops between operations and preserves earlier saved changes.
-If the folder dialog is hidden, switch to Outlook with Alt+Tab or the taskbar.
-For Exchange free/busy, prefer the
-intended account's default calendar; an additional calendar may not affect it.
+Reuse an existing `.venv` instead of recreating it. No administrator rights are
+needed. Starting the importer starts no preview or synchronization.
 
-See [the importer documentation](docs/ics-importer.md) for profile storage,
-preview behavior and the current implementation scope.
+1. Start classic Outlook with the destination account connected. Enter a profile
+   name and the source's HTTPS ICS URL (for example `https://example.invalid/calendar.ics`,
+   a placeholder to replace with your actual feed).
+2. Choose the destination calendar explicitly. If Outlook's folder dialog is
+   behind the importer, use **Alt+Tab** or the taskbar. For account-level Exchange
+   free/busy, prefer that account's default calendar; an additional calendar may
+   not publish availability for the account.
+3. Set **From**, **Until** and the floating-time timezone, usually `Europe/Berlin`.
+   From is inclusive and Until exclusive: `2026-10-01` to `2026-11-01` covers October.
+   All-day events also use an exclusive end date. Window/recurrence rules and
+   pending-removal reasons are described in [the technical reference](docs/ics-importer.md).
+4. Leave **Source includes all events in this period — allow removal of missing imports**
+   unchecked unless the feed includes every event for that period. This describes
+   source coverage, not whether downloading has finished. Unknown/rolling coverage:
+   leave it off; additions and updates still work. **About removals…** explains it.
+5. **Save profile**, then **Build preview**. Review the destination, new/updated/
+   unchanged items, conflicts and pending removals. A preview changes no appointments.
+   Edited inputs require a new preview; saving matching inputs preserves it.
+6. Choose **Synchronize preview**, review the summary and confirm. The rows update
+   when each change is verified. Empty-source and unusually large deletions require
+   extra confirmation. **Cancel run** stops between operations; an in-flight Save
+   may finish and earlier saved changes remain.
+
+### Later runs and existing appointments
+
+Select the same saved profile, build a fresh preview and confirm the changes.
+Profiles are stored in `%APPDATA%\Exchange Mirror\ics-importer\profiles.json`.
+Back up this file privately: it contains the source URL, destination IDs and stable
+profile UUIDs. A feed's tokenized URL can grant access even when no login is needed.
+Source and EXE use the same profile storage. `--profiles PATH` selects a separate
+file when needed; restore the original file to recover the same import identity.
+
+Avoid recreating an existing mapping with **New profile**: a new UUID owns a separate
+set of imports and can create duplicates. A token refresh for the same feed should
+edit the existing profile's URL; confirm the mapping change, save and rebuild the
+preview. A changed URL clears the coverage assertion. Changing the destination
+does not move or clean up imports in the previous calendar. Use a new profile for
+an unrelated source; do not repurpose an old source identity.
+
+Appointments previously imported manually or by another tool have no importer
+ownership markers. They are left untouched, even if their subject/time matches a
+source event. There is no automatic adoption or deduplication against those items.
+For migration, first review a preview in a separate empty calendar. Before using
+an existing calendar, back up and manually resolve only the known legacy copies.
+Never delete unrelated appointments or hand-edit ownership markers.
+
+### Removal and error handling
+
+Only known-schema items owned by this profile in the selected destination may be
+deleted, with per-run confirmation. Explicit source cancellations and absence from
+a complete source are separate reasons. Absence-based removal additionally needs
+confirmed coverage and both the original occurrence slot and current target start
+inside the selected range. Shrinking a window does not authorize historical cleanup.
+Unmarked items, other profiles and out-of-scope imports are protected. Conflicts
+must be resolved before synchronization; a candidate with blockers remains pending.
+
+| Result | Next action |
+| --- | --- |
+| Source/Outlook read error, invalid feed or marker | No incomplete snapshot is applied. Check the source/destination and static diagnostic, then build a fresh preview. |
+| `inventory_changed` | The calendar changed during reading. Reads are retried at most twice; if it persists, finish parallel edits in Outlook and preview again. |
+| Source or destination changed since preview | Review the refreshed preview and explicitly confirm again. |
+| Save/Delete error or uncertain last operation | Earlier verified changes remain; the last operation may already exist. Build a fresh preview with the **same profile** before retrying. Do not assume rollback or create a replacement profile. |
+| Another run is using this target | Wait for it to finish. Empty lock files may remain normally; do not remove files to bypass a live lock. |
+| Profile cannot be loaded | Saving is disabled to preserve it. Keep the file and restore a known-good backup or correct its contents deliberately. |
+
+The first destination read can be slow for large calendars; supported providers
+reuse unchanged records within the session after checking Outlook change keys.
+The importer is separate from the tray app and does not add autostart behavior.
+Exchange server free/busy publication still needs validation for the chosen account;
+Busy=2 in Outlook alone does not prove another user's scheduling-assistant view.
+
+See [the technical reference](docs/ics-importer.md) and
+[local merge-request preparation](docs/ics-importer-merge-request.md) for scope,
+verification evidence and remaining integration limits.
 
 ## Building from Source
 

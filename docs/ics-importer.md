@@ -2,21 +2,26 @@
 
 ## Intended behavior
 
-The importer will be a separate, manually started tool for synchronizing a public
+The importer is a separate, manually started tool for synchronizing a public
 ICS source into an explicitly selected Outlook calendar in one direction.
-It will create new events, update existing imports, and remove owned imports when
+It creates new events, updates existing imports, and removes owned imports when
 the source's cancellation or confirmed export coverage establishes their removal.
 Unrelated calendar items must remain unchanged. Stable source identities must
 prevent duplicates when an event's subject or time changes.
 
-Imported events will always use Outlook's **Busy** availability, including when
-the source marks them as tentative. They will be ordinary appointments without
+Imported events always use Outlook's **Busy** availability, including when
+the source marks them as tentative. They are ordinary appointments without
 invitations or meeting responses. The selected destination must contribute to the
 intended Exchange account's free/busy information for others to see that time as busy.
 
-The tool will have its own entry point and source/destination settings. It will
-not start with the existing tray application's synchronization loop and will not
+The tool has its own entry point and source/destination settings. It does
+not start with the existing tray application's synchronization loop and does not
 require two Outlook accounts or privacy settings.
+
+For first use, migration of legacy appointments and recovery after errors, follow
+the [README usage guide](../README.md#manual-ics-importer). This document describes
+the implemented contracts in development-step order; earlier layers remain pure
+even though later layers now provide real Outlook writes and the GUI.
 
 ## Implementation status
 
@@ -38,9 +43,15 @@ Step 14 adds confirmed single-item deletes with ownership and readback checks.
 Step 15 connects fetch, parse, preview and execution through a guarded run coordinator.
 Step 16 adds a manually started, preview-only Tk GUI.
 Step 17 adds confirmed GUI synchronization, progress, cancellation and result reporting.
+Step 18 adds reproducible real-Outlook acceptance evidence and explicit open checks.
+Follow-up fixes add safe diagnostics, change-key inventory reuse and live row status.
+Step 19 adds the standalone Windows distribution and offline runtime diagnostics.
+Step 20 completes usage/migration/recovery documentation and local MR preparation.
 The existing Exchange Mirror behavior is unchanged.
 
-Later steps will complete integration acceptance, packaging and delivery documentation.
+The user has accepted the bounded real import and the executable. Exchange server
+free/busy publication, Outlook-client restart and a separate clean machine without
+Python remain unverified; see the acceptance/build protocols and MR preparation.
 
 ## Event identity contract
 
@@ -54,19 +65,19 @@ Serialization is a versioned JSON array with explicit date/date-time tags;
 `key` is the SHA-256 hexadecimal digest of that UTF-8 encoding. A date is distinct
 from midnight on that date. Aware timestamps normalize to UTC with microsecond
 precision, so equivalent instants have the same identity. Naive timestamps are
-rejected: a future parser must resolve floating times using the profile timezone.
+rejected: the parser resolves floating times using the profile timezone.
 The v1 encoding is a persistence contract; changing it later requires migration.
 
 `EventFields` represents text, categories and a start/end pair (both dates or both
 aware timestamps). Date ends are exclusive. Zero-duration timed events are allowed;
 an end before the start is rejected. `SourceEvent` adds status and revision data;
 cancelled events may be content-free tombstones. `TargetState` records observed
-flags, including non-busy availability that a later planner must repair.
+flags, including non-busy availability that the planner repairs.
 `SyncOperation` describes create/update/delete/unchanged/conflict without executing
 anything and can retain multiple matching targets as conflict evidence.
 
 These records themselves do not parse ICS, resolve revisions or execute actions.
-The separate planner enforces the Busy projection; Outlook writing remains a later step.
+The separate planner enforces the Busy projection; the adapter performs Outlook writes.
 
 ## Offline parsing (step 3)
 
@@ -194,15 +205,15 @@ exceptions is rejected as contradictory.
 STATUS:CANCELLED with RECURRENCE-ID is an occurrence tombstone and suppresses the
 active generated slot. A cancelled master/no-RECURRENCE-ID record becomes one UID-wide
 tombstone without expansion, even if no RRULE or DTSTART is supplied. This represents
-a single-event or whole-series cancellation; the later planner must apply it only to
+a single-event or whole-series cancellation; the planner applies it only to
 owned imports in the authorized target/scope. It is not itself an Outlook deletion.
 Whole-series cancellation suppresses older/equal-ranked exceptions; a newer exception
 without an active newer master is contradictory and fails rather than resurrecting
 part of the cancelled series. A newer active master revision can supersede cancellation.
 
 Only publication snapshots are accepted; this does not add an iTIP METHOD:CANCEL
-message processor. Outlook changes and cross-run revision history remain later
-concerns. Revisions are resolved within the supplied snapshot only.
+message processor. Outlook changes are separate from parsing; cross-run revision
+history is not retained. Revisions are resolved within the supplied snapshot only.
 
 ## HTTPS downloads (step 7)
 
@@ -239,8 +250,8 @@ rewriting the file. This is JSON data, never executable Python configuration.
 
 Writes validate all records first, write/flush/fsync a temporary file in the same
 directory and atomically replace the destination. A failed replace retains the old
-file. This is atomic file replacement, not concurrent-writer coordination; locking
-is a later step. Profile files contain the source URL and must not be logged or
+file. This is atomic file replacement, not concurrent profile-writer coordination.
+Run locks protect synchronization, not simultaneous profile editing. Profile files contain the source URL and must not be logged or
 committed. `update_profile` requires explicit confirmation for URL or destination
 changes and preserves the UUID, including when renewing a query token. It does not
 migrate existing Outlook items or infer that two URLs refer to the same calendar.
@@ -251,7 +262,7 @@ migrate existing Outlook items or infer that two URLs refer to the same calendar
 source records and a complete `TargetInventory`. Destination identity is checked
 by store/folder IDs, not mutable display names. Source identities must belong to
 the selected profile. Inventory items are marked `TargetState` records or explicit
-`UnmanagedItem` records. A future adapter must abort on read/marker errors rather
+`UnmanagedItem` records. The adapter aborts on read/marker errors rather
 than misclassify unreadable items as unmanaged.
 
 `project_event` produces original public content with Busy=2, reminders off and
@@ -308,8 +319,8 @@ the caller must inspect their blockers since some require corrected data/coverag
 
 Only confirmed, unblocked candidates enter `operations` as DELETE. No candidate is
 selected by title, category or account display name, and nothing deletes from another
-folder or profile. Future execution must revalidate ownership and freshness and honor
-the same safety conditions; those adapter/coordinator steps are not implemented here.
+folder or profile. The adapter/coordinator revalidate ownership and freshness and
+honor the same safety conditions; the pure planner does not execute them itself.
 
 ## Read-only Outlook inventory (step 11)
 
@@ -330,13 +341,15 @@ the result's identity and calendar item type. Missing/changed/non-calendar folde
 fail. Resolution never uses a display-name fallback. This establishes readability,
 not permission to write; write checks belong to subsequent adapter steps.
 
-The inventory scans the entire folder without date filtering. The Items collection
-view has IncludeRecurrences=False to avoid expanding infinite native series; this
-does not modify an appointment. A default 100,000-item limit, iterator failures,
-changed counts or duplicate EntryIDs abort the whole read. Count checks detect some
-concurrent changes, not an atomic Outlook snapshot; later execution still needs
-freshness checks. Duplicate importer source identities are retained as separate
-records for the planner's conflict detection.
+The inventory covers the entire folder without date filtering. The original Items
+collection fallback has IncludeRecurrences=False to avoid expanding infinite native
+series; this does not modify an appointment. Supported providers now use the
+change-key table/cache described under step 18. A default 100,000-item limit,
+iterator failures, inconsistent snapshots or duplicate EntryIDs invalidate the
+whole read. Detected concurrent changes receive the bounded read retries described
+below; count checks in the fallback alone do not provide an atomic snapshot.
+Execution also performs freshness checks. Duplicate importer source identities are
+retained as separate records for the planner's conflict detection.
 
 All four importer markers are custom text UserProperties:
 
@@ -458,7 +471,7 @@ remain step 15 concerns; these optimistic checks are not a transaction with othe
 
 ## Manual run coordinator (step 15)
 
-`ImportCoordinator` in `ics_run.py` provides the complete core flow for a future
+`ImportCoordinator` in `ics_run.py` provides the complete core flow for the
 GUI/CLI. `preview(profile)` locks the profile/destination, opens a read-only Outlook
 session, downloads and fully parses the source, resolves its planning timezone and
 reads the whole target inventory. It returns an immutable `ImportPreview` containing
