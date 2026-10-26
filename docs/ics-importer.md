@@ -26,6 +26,7 @@ Step 3 adds offline parsing of simple VEVENTs in `ics_source.py`.
 Step 4 adds snapshot-local TZID/VTIMEZONE resolution, explicit floating-time zones
 and daylight-saving-aware duration handling.
 Step 5 expands regular event recurrence sets in an explicit finite date window.
+Step 6 resolves source revisions and overlays detached exceptions and cancellations.
 There is no importer command, UI, network client or Outlook write path yet.
 The existing Exchange Mirror behavior is unchanged.
 
@@ -67,8 +68,8 @@ uses the `icalendar` library, pinned independently of the existing application.
 
 The current subset supports one complete VERSION:2.0 publication calendar with
 PRODID, independent VEVENTs, required UID/DTSTAMP and DTSTART for active events.
-UTC timestamps and DATE values are accepted. Recurrence exceptions and multiple
-revisions of one UID remain explicitly rejected until their planned steps. Folded lines
+UTC timestamps and DATE values are accepted. Source revisions and detached
+exceptions follow the rules below. Folded lines
 and escaped text are decoded by the library.
 
 DTEND and positive DURATION are alternatives. A missing end defaults to the same
@@ -142,9 +143,9 @@ policy for ambiguous/nonexistent output times as other local timestamps.
 
 Explicit DTEND gives every occurrence the master's exact elapsed duration.
 DURATION retains its nominal-day versus exact-hour semantics for each occurrence.
-All-day starts and exclusive ends remain dates. Event exceptions using RECURRENCE-ID,
-EXRULE, RDATE periods, recurring cancellations, multiple RRULEs and duplicate master
-UIDs remain unsupported until explicitly addressed; they fail the whole snapshot.
+All-day starts and exclusive ends remain dates. EXRULE, RDATE periods and multiple
+RRULEs remain unsupported and fail the whole snapshot. Revisions, detached exceptions
+and cancellation records are handled as described below.
 
 Defaults are 10,000 output events per snapshot and 100,000 iterated RRULE candidates
 per series (`max_occurrences` / `max_candidates`). Explicit date-list entries also
@@ -153,3 +154,43 @@ never returns a truncated successful snapshot. Iteration counts candidates from
 DTSTART, including those before the window; a very old dense series can therefore
 fail instead of completing. These are work/output guards, not a hard elapsed-time
 timeout inside the recurrence library. No additional package is introduced in step 5.
+
+## Exceptions, cancellations and source revisions (step 6)
+
+Revisions are grouped by profile, UID and original RECURRENCE-ID (or the single/master
+sentinel). Highest SEQUENCE wins, then latest LAST-MODIFIED (otherwise DTSTAMP).
+Selection is independent of input order. Identical highest-ranked duplicates collapse;
+different highest-ranked payloads fail the entire snapshot, including differences in
+recurrence definitions. Conflicts among superseded revisions do not invalidate a
+newer unambiguous winner. Every input component must still be syntactically valid.
+
+Detached exceptions use RECURRENCE-ID as their identity, never their replacement
+DTSTART. After expanding a master, an exception suppresses that original slot and
+supplies its replacement content or cancellation. Exception revisions are selected
+independently of the master's revision number. Fields are interpreted as a complete
+event with the usual defaults, not a partial patch of the master. Value types must
+match (DATE versus DATE-TIME); an exception cannot define its own recurrence set.
+RANGE parameters, including THISANDFUTURE, are explicitly rejected.
+
+An exception is returned when either its original slot or its actual new start is
+inside the expansion window. Thus moving out of the window still yields an update
+under the old key, and moving into it can create the correct replacement. The master
+timezone defines window membership when present; a standalone detached exception
+uses its RECURRENCE-ID timezone. Standalone exceptions are accepted as explicit
+records, without proving membership in an absent master's rule. An active standalone
+exception still needs DTSTART; any exception needs a date window. An explicit override
+can replace an EXDATE-excluded slot. A nonrecurring active master with detached
+exceptions is rejected as contradictory.
+
+STATUS:CANCELLED with RECURRENCE-ID is an occurrence tombstone and suppresses the
+active generated slot. A cancelled master/no-RECURRENCE-ID record becomes one UID-wide
+tombstone without expansion, even if no RRULE or DTSTART is supplied. This represents
+a single-event or whole-series cancellation; the later planner must apply it only to
+owned imports in the authorized target/scope. It is not itself an Outlook deletion.
+Whole-series cancellation suppresses older/equal-ranked exceptions; a newer exception
+without an active newer master is contradictory and fails rather than resurrecting
+part of the cancelled series. A newer active master revision can supersede cancellation.
+
+Only publication snapshots are accepted; this does not add an iTIP METHOD:CANCEL
+message processor. Deletion planning, Outlook changes and cross-run revision history
+remain later concerns. Revisions are resolved within the supplied snapshot only.

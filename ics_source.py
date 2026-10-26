@@ -1,6 +1,6 @@
 """Offline conversion of a complete ICS snapshot into importer records."""
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 import re
 from uuid import UUID
@@ -17,6 +17,17 @@ from ics_recurrence import expand_starts
 
 class IcsParseError(ValueError):
     """The entire snapshot is unusable; callers must not infer any deletions."""
+
+
+@dataclass(frozen=True)
+class _ParsedEvent:
+    component: object
+    source: SourceEvent
+    raw: dict
+
+    @property
+    def rank(self):
+        return self.source.sequence, self.source.revision_time
 
 
 def _single(component, name, *, required=False):
@@ -82,10 +93,17 @@ def _time_value(value, raw_params, raw_value, zones, floating_zone):
 
 
 def _parse_event(event, profile_id, zones, floating_zone, raw_properties):
-    for name in ("RECURRENCE-ID", "EXRULE"):
-        if name in event:
-            raise IcsParseError("Recurrence exceptions and EXRULE are not supported yet")
+    if "EXRULE" in event:
+        raise IcsParseError("EXRULE is not supported")
     identity = EventIdentity(profile_id, str(_single(event, "UID", required=True)))
+    recurrence = _single(event, "RECURRENCE-ID")
+    if recurrence is not None:
+        if "RANGE" in recurrence.params:
+            raise IcsParseError("RECURRENCE-ID RANGE is not supported")
+        if any(name in event for name in ("RRULE", "RDATE", "EXDATE")):
+            raise IcsParseError("Detached exceptions cannot define a recurrence set")
+        slot = _event_time(event, "RECURRENCE-ID", zones, floating_zone, raw_properties)
+        identity = replace(identity, recurrence_id=slot)
     status_prop = _single(event, "STATUS")
     status_text = str(status_prop).upper() if status_prop is not None else "CONFIRMED"
     try:
@@ -102,6 +120,8 @@ def _parse_event(event, profile_id, zones, floating_zone, raw_properties):
     fields = None
     if "DTSTART" in event:
         start = _event_time(event, "DTSTART", zones, floating_zone, raw_properties)
+        if recurrence is not None and isinstance(start, datetime) != isinstance(slot, datetime):
+            raise IcsParseError("Exception DTSTART must match RECURRENCE-ID value type")
         if "DTEND" in event:
             end = _event_time(event, "DTEND", zones, floating_zone, raw_properties)
             comparable_start = start.astimezone(timezone.utc) if isinstance(start, datetime) else start
@@ -165,7 +185,7 @@ def _event_time_tokens(text):
             name = name.upper()
             if name in ("RDATE", "EXDATE"):
                 properties[-1].setdefault(name, []).append((params, value))
-            elif name in ("DTSTART", "DTEND", "DURATION", "RRULE"):
+            elif name in ("DTSTART", "DTEND", "DURATION", "RRULE", "RECURRENCE-ID"):
                 properties[-1][name] = (params, value)
     return properties
 
@@ -213,6 +233,82 @@ def _expand_event(component, source, zones, floating_zone, raw, window_start,
         result.append(replace(source, identity=identity,
                               fields=replace(source.fields, start=slot, end=end)))
     return tuple(result)
+
+
+def _select_revisions(records):
+    groups = {}
+    for record in records:
+        groups.setdefault(record.source.identity, []).append(record)
+    selected = []
+    for versions in groups.values():
+        rank = max(record.rank for record in versions)
+        winners = [record for record in versions if record.rank == rank]
+        first = winners[0]
+        for other in winners[1:]:
+            if (other.source != first.source or other.raw != first.raw
+                    or other.component.to_ical() != first.component.to_ical()):
+                raise IcsParseError("Conflicting equal-rank source revisions")
+        selected.append(first)
+    return selected
+
+
+def _in_exception_window(source, zone, window_start, window_end):
+    if type(window_start) is not date or type(window_end) is not date:
+        raise IcsParseError("Recurrence exceptions require an explicit date window")
+    values = [source.identity.recurrence_id]
+    if source.fields is not None:
+        values.append(source.fields.start)
+    for value in values:
+        local_date = value.astimezone(zone).date() if isinstance(value, datetime) else value
+        if window_start <= local_date < window_end:
+            return True
+    return False
+
+
+def _assemble_events(records, zones, floating_zone, window_start, window_end,
+                     max_occurrences, max_candidates):
+    groups = {}
+    for record in _select_revisions(records):
+        groups.setdefault(record.source.identity.uid, []).append(record)
+    output = []
+    for group in groups.values():
+        master = next((r for r in group if r.source.identity.recurrence_id is None), None)
+        exceptions = [r for r in group if r.source.identity.recurrence_id is not None]
+        if master is not None and master.source.status is EventStatus.CANCELLED:
+            if any(r.rank > master.rank for r in exceptions):
+                raise IcsParseError("Exception is newer than the series cancellation")
+            # UID-wide tombstone; the future planner still enforces target ownership/scope.
+            output.append(replace(master.source, fields=None))
+        else:
+            zone = None
+            if master is not None:
+                if exceptions and not any(k in master.component for k in ("RRULE", "RDATE", "EXDATE")):
+                    raise IcsParseError("Detached exception has a nonrecurring master")
+                start = _event_time(master.component, "DTSTART", zones, floating_zone, master.raw)
+                zone = start.tzinfo if isinstance(start, datetime) else None
+                expanded = _expand_event(master.component, master.source, zones, floating_zone,
+                                         master.raw, window_start, window_end,
+                                         max_occurrences, max_candidates)
+            else:
+                expanded = ()
+            # Remove the original slot even when the replacement moves outside the window.
+            overridden = {r.source.identity for r in exceptions}
+            output.extend(event for event in expanded if event.identity not in overridden)
+            for record in exceptions:
+                source = record.source
+                slot = source.identity.recurrence_id
+                if master is not None and isinstance(slot, datetime) != isinstance(start, datetime):
+                    raise IcsParseError("Exception slot must match master DTSTART value type")
+                exception_zone = zone
+                if master is None and isinstance(slot, datetime):
+                    local_slot = _event_time(record.component, "RECURRENCE-ID", zones,
+                                             floating_zone, record.raw)
+                    exception_zone = local_slot.tzinfo
+                if _in_exception_window(source, exception_zone, window_start, window_end):
+                    output.append(source)
+        if len(output) > max_occurrences:
+            raise IcsParseError("Snapshot occurrence limit exceeded")
+    return tuple(output)
 
 
 def _snapshot_zones(calendar):
@@ -268,8 +364,8 @@ def parse_ics(data: bytes | str, profile_id: UUID, *, floating_timezone: str | N
     """Parse all events or fail the complete snapshot; performs no I/O.
 
     Floating timestamps require a profile timezone; no machine-local fallback.
-    Recurrences need a half-open local date window. Exceptions and multiple
-    revisions of one UID remain unsupported.
+    Recurrences need a half-open local date window. Detached exceptions retain
+    their original slot; revision conflicts fail the complete snapshot.
     """
     if not isinstance(profile_id, UUID):
         raise TypeError("profile_id must be a UUID")
@@ -307,22 +403,17 @@ def parse_ics(data: bytes | str, profile_id: UUID, *, floating_timezone: str | N
         zones = _snapshot_zones(calendar)
         floating_zone = _resolve_zone(floating_timezone, zones) if floating_timezone is not None else None
         raw_properties = iter(_event_time_tokens(text))
-        events = []
-        source_ids = set()
+        records = []
         for component in calendar.subcomponents:
             if component.name != "VEVENT":
                 continue
             raw = next(raw_properties)
             source = _parse_event(component, profile_id, zones, floating_zone, raw)
-            if source.identity in source_ids:
-                raise IcsParseError("Duplicate source identity; revision resolution is not implemented yet")
-            source_ids.add(source.identity)
-            events.extend(_expand_event(component, source, zones, floating_zone, raw,
-                                        window_start, window_end, max_occurrences, max_candidates))
-            if len(events) > max_occurrences:
-                raise IcsParseError("Snapshot occurrence limit exceeded")
+            records.append(_ParsedEvent(component, source, raw))
+        events = _assemble_events(records, zones, floating_zone, window_start, window_end,
+                                  max_occurrences, max_candidates)
         if len({event.identity for event in events}) != len(events):
-            raise IcsParseError("Duplicate source identity; revision resolution is not implemented yet")
+            raise IcsParseError("Conflicting expanded event identities")
         return tuple(events)
     except IcsParseError:
         raise
