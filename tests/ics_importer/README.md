@@ -1,5 +1,36 @@
 # ICS importer test foundation
 
+## Preview GUI (step 16)
+
+`test_gui.py` covers form defaults/validation, stable draft IDs, explicit mapping
+changes, coverage reset, display-only destination renames, preview rows and static
+error messages. Worker tests check background execution and rejection of overlapping
+jobs. Withdrawn Tk windows exercise startup without automatic reads, validation,
+cancelled selection, preview rendering, invalidation, temporary profile persistence,
+read errors, event-loop responsiveness, late-result rejection, close-after-read and
+corrupt-file preservation. All backends/dialogs are injected; no real Outlook, native
+picker, network or user profile files are accessed. Tk cases skip only if no display
+is available; the Windows run executed them successfully.
+
+Separate authorized read-only GUI-worker check on 2026-10-26 used the real HTTPS
+source and real Outlook inspection of the empty **Exchange Mirror Importer Test**
+calendar. It rendered 87 preview rows and the additional-calendar free/busy notice.
+No profile was saved, the execute API was never invoked and the test calendar
+remained empty. The Tk root was withdrawn for this smoke test; native picker and
+visual usability review remain for the user's interactive test.
+
+`test_calendar_picker.py` tests plain metadata, cancellation with no fallback,
+account-default versus additional calendars, unknown classification and invalid/
+missing folders using fake Outlook sessions. No calendar picker is opened by tests.
+
+Manual user review: start `.venv\Scripts\python.exe ics_importer.py`, paste the
+desired public HTTPS source, choose the intended calendar, adjust the exclusive
+date window and build a preview. Check layout, keyboard/paste behavior, folder
+selection/cancellation, account/free-busy hints and preview notes. The GUI cannot
+execute changes in this step. Use `--profiles PATH` for a separate test profiles
+file if desired. Interactive feedback remains with the user; the automatic checks
+do not claim to replace native dialog or visual usability review.
+
 ## Run coordination and process locks (step 15)
 
 `test_run.py` connects synthetic feeds to a stateful in-memory adapter. It covers
