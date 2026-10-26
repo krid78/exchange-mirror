@@ -33,10 +33,10 @@ tentative status and cancellation tombstones. Invalid or duplicate scalar fields
 bad times, partial snapshots, HTML, unexpected components and duplicate identities
 must fail the entire parse instead of returning a partial event list.
 
-UTC/date parsing is supported; unconfigured floating timestamps and event
-recurrence properties must fail explicitly.
+UTC/date parsing is supported; unconfigured floating timestamps, recurrence
+without an explicit window, and unsupported exception properties fail explicitly.
 Source alarms and attendees are not copied. LF/CRLF and UTF-8 BOM inputs are covered.
-These tests do not prove HTTP, recurrence expansion, planning
+These tests do not prove HTTP or planning
 or Outlook behavior; those belong to later steps.
 
 ## Timezones and all-day events (step 4)
@@ -50,7 +50,21 @@ or duplicate zone definitions must fail instead of silently choosing an offset.
 
 These tests use installed `tzdata` and synthetic calendar data only. No machine
 timezone setting, network request or Outlook calendar is modified. The timetable
-fixture is now accepted; VEVENT recurrence expansion remains out of scope.
+fixture is accepted; regular VEVENT recurrence expansion is covered below.
+
+## Bounded recurrence expansion (step 5)
+
+`test_recurrence.py` checks finite windows for unbounded daily rules, COUNT/UNTIL,
+weekly BYDAY, RDATE unions and repeated values, EXDATE precedence (including DTSTART),
+and all-day date sets. DST tests check stable local hours and per-occurrence duration
+semantics; equivalent RDATE/EXDATE timestamps in different zones collapse correctly.
+Window membership is based on local start dates, including starts on the previous
+UTC day. Output identities retain the original occurrence slot.
+
+Failure cases cover missing/invalid windows, work/output limits, old dense rules,
+invalid RRULE termination, unsupported extensions, date/time mismatches, periods,
+exception components and duplicate masters. No failed expansion is allowed to return
+a partial success. Singleton behavior remains unchanged. Tests are entirely offline.
 
 ## Fixtures
 
