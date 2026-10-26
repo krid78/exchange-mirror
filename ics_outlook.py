@@ -226,6 +226,7 @@ class OutlookReader:
         self._namespace = namespace
         self._separator = category_separator
         self._owner_thread = threading.get_ident()
+        self._inventory_cache = {}
 
     def _check_thread(self):
         if threading.get_ident() != self._owner_thread:
@@ -234,6 +235,7 @@ class OutlookReader:
     def close(self):
         self._check_thread()
         self._namespace = None
+        self._inventory_cache.clear()
 
     def resolve_calendar(self, destination):
         try:
@@ -255,8 +257,83 @@ class OutlookReader:
     def read_inventory(self, destination, *, max_items=100000):
         if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items <= 0:
             raise ValueError("max_items must be a positive integer")
+        # Retry only a discarded read, never Save/Delete. A fresh complete snapshot
+        # is required before the caller may continue with any write.
+        for attempt in range(3):
+            try:
+                return self._read_inventory_once(destination, max_items=max_items)
+            except OutlookReadError as error:
+                if error.code != "inventory_changed" or attempt == 2:
+                    raise
+
+    def _change_table(self, folder, max_items, *, optional=False):
+        try:
+            table = folder.GetTable()
+            table.Columns.RemoveAll()
+            table.Columns.Add("EntryID")
+            table.Columns.Add("http://schemas.microsoft.com/mapi/proptag/0x65E20102")  # PR_CHANGE_KEY
+        except Exception:
+            if optional:
+                return None  # Provider lacks tables/change keys: use the full scan.
+            raise
+        expected = table.GetRowCount()
+        if expected < 0 or expected > max_items:
+            raise OutlookReadError("Calendar inventory exceeds its item limit", code="inventory_limit")
+        result = {}
+        while not table.EndOfTable:
+            rows = table.GetArray(256)
+            if not rows:
+                raise OutlookReadError("Calendar changed during table read", code="inventory_changed")
+            for row in rows:
+                if len(row) != 2 or not isinstance(row[0], str) or not row[0]:
+                    raise ValueError("Invalid change-table entry")
+                entry_id, token = row
+                if not isinstance(token, (bytes, bytearray, memoryview)) or not len(token):
+                    if optional:
+                        return None  # Never substitute a timestamp for a change key.
+                    raise ValueError("Unavailable change key")
+                key = entry_id.casefold()
+                if key in result:
+                    raise OutlookReadError("Repeated change-table item", code="inventory_changed")
+                result[key] = (entry_id, bytes(token))
+                if len(result) > max_items:
+                    raise OutlookReadError("Calendar inventory exceeds its item limit", code="inventory_limit")
+        if len(result) != expected or table.GetRowCount() != expected:
+            raise OutlookReadError("Calendar changed during table read", code="inventory_changed")
+        # Keep the table alive until its short-term EntryIDs have been opened.
+        return result, table
+
+    def _read_inventory_once(self, destination, *, max_items):
         try:
             folder = self.resolve_calendar(destination)
+            cache_key = (destination.store_id.casefold(), destination.folder_id.casefold())
+            snapshot = self._change_table(folder, max_items, optional=True)
+            if snapshot is not None:
+                before, before_table = snapshot
+                cached = self._inventory_cache.get(cache_key, {})
+                fresh = {}
+                for key, (entry_id, token) in before.items():
+                    previous = cached.get(key)
+                    if previous is not None and previous[0] == token:
+                        observed = previous[1]
+                    else:
+                        appointment = self._namespace.GetItemFromID(entry_id, destination.store_id)
+                        observed = _read_item(appointment, self._separator)
+                        # Tables may expose short-term EntryIDs, while the opened
+                        # object returns a long-term ID. Compare through MAPI.
+                        if (observed.entry_id.casefold() != key
+                                and not self._namespace.CompareEntryIDs(entry_id, observed.entry_id)):
+                            raise ValueError("Change-table identity mismatch")
+                    fresh[key] = (token, observed)
+                after, after_table = self._change_table(folder, max_items)
+                if after != before:
+                    raise OutlookReadError("Calendar changed during inventory", code="inventory_changed")
+                if len({value[1].entry_id.casefold() for value in fresh.values()}) != len(fresh):
+                    raise OutlookReadError("Calendar repeated an item during inventory", code="inventory_duplicate")
+                # Commit only a stable snapshot. No COM object survives this read.
+                self._inventory_cache[cache_key] = fresh
+                return TargetInventory(destination, tuple(value[1] for value in fresh.values()))
+            self._inventory_cache.pop(cache_key, None)
             items = folder.Items
             # Collection view only: never expand potentially infinite native series.
             items.IncludeRecurrences = False

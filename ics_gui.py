@@ -582,6 +582,10 @@ class ImporterWindow:
                 break
             if generation != self._generation or not self._executing:
                 continue
+            if update.phase == "verified" and update.identity_key and update.operation_kind in _ACTIONS:
+                for row, key in self._row_keys.items():
+                    if key == update.identity_key:
+                        self.tree.set(row, "action", _ACTIONS[update.operation_kind] + " verified")
             if update.total:
                 self.progress.stop()
                 self.progress.configure(mode="determinate", maximum=update.total, value=update.completed)

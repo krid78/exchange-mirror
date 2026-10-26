@@ -65,6 +65,7 @@ class RunProgress:
     completed: int
     total: int
     operation_kind: OperationKind | None = None
+    identity_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -180,7 +181,8 @@ class ImportCoordinator:
         def notify(stage):
             if progress is not None:
                 try:
-                    progress(RunProgress(stage, len(receipts), total, active.kind if active else None))
+                    progress(RunProgress(stage, len(receipts), total, active.kind if active else None,
+                                         active.identity.key if active else None))
                 except Exception:
                     log.warning("Progress observer failed; synchronization state is unaffected")
         try:

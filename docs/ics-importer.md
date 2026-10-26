@@ -616,10 +616,28 @@ Available numeric COM HRESULT/SCODE values are included in hexadecimal; raw COM
 descriptions and calendar contents are excluded. No write is retried automatically.
 Rebuild the preview before continuing after an error.
 
-The current defensive implementation scans the entire destination before each
-individual write. Large target calendars therefore substantially increase import
-time; this is not a network-download measurement. These diagnostics distinguish
-the observed read-error interruption from a failed Save without weakening guards.
+Before each write the destination is still checked. Providers supporting Outlook
+tables and nonempty binary `PR_CHANGE_KEY` values use a session-local cache of plain
+inventory records. A table snapshot of every EntryID/change key is read before and
+after materializing new or changed items; unequal snapshots are discarded. Unchanged
+records can be reused only with an equal change key. Additions, removals and edits
+are observed on every read. No cached data survives the Outlook session. The initial
+read still opens every item; later reads avoid reopening unchanged appointments.
+The change token identifies the object's last change
+([Microsoft specification](https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-oxprops/e9ad95c1-83b7-4ee8-9d72-60f8faffc0d2)).
+
+Table EntryIDs can be short-term IDs. They are compared with the opened item's
+long-term ID through Outlook; only the long-term ID enters plans and receipts.
+Providers without the table/change-key capability use the original full scan.
+Missing keys never fall back to timestamp-based cache reuse. Existing per-item
+ownership/state/unsaved-edit guards and pre-deletion source/target checks remain.
+
+A changed inventory is retried at most twice (three read attempts total), with
+no Save/Delete during a discarded attempt. Persistent changes still stop the run;
+build a new preview before continuing. This tolerates occasional parallel Outlook
+activity, but does not promise synchronization while the target is continually
+changing. No failed write is retried. GUI rows now show **verified** immediately
+after the corresponding save/delete has been verified, while the worker continues.
 
 The isolated Outlook acceptance run verified interrupted-process recovery,
 idempotency, stable update identities, explicit cancellation and coverage-based
