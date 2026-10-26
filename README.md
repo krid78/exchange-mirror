@@ -34,11 +34,50 @@
 
 1. Run `Exchange_Mirror_Setup.exe` to install
 2. Make sure Outlook is running with both accounts connected
-3. Launch **Exchange Mirror** from the Start Menu (or it starts automatically on login if you chose that option during install)
+3. Launch **Exchange Mirror** from the Start Menu
 4. The app appears as a blue sync icon in the system tray
 5. Right-click the tray icon to start/stop sync, view settings, or exit
 
 On first run, right-click the tray icon → **Settings...** to adjust your sync preferences — no need to hand-edit config files.
+
+### Installation scope and updates
+
+For a new installation, Setup defaults to **Install for me only**, normally
+under `%LOCALAPPDATA%\Programs\Exchange Mirror`, without requesting administrator
+rights. You can instead select **Install for all users** to install under
+`Program Files`; this requires administrator approval. Start Menu and optional
+desktop shortcuts follow the selected scope. Run the installed application
+normally as the Windows user whose Outlook profile should be synchronized.
+
+Updates automatically reuse the detected installation scope and normally keep
+the existing directory. An existing all-users installation therefore still
+requires administrator approval when updated; it does not automatically become
+a per-user installation. For scripted installations, `/CURRENTUSER` and
+`/ALLUSERS` explicitly select the scope.
+
+**Changing scope is a migration, not an in-place update.** Forcing a per-user
+installation while an all-users installation exists can leave two independent
+copies, duplicate shortcuts, and an autostart entry pointing to the old copy.
+Running both copies may also cause concurrent synchronization. Before switching:
+stop and exit Exchange Mirror, disable its autostart in Settings, back up your
+configuration, and uninstall the old copy (administrator approval may be needed).
+Then install in the desired scope and re-enable autostart for the new copy.
+Existing runtime settings and logs are stored per user under
+`%APPDATA%\Exchange Mirror`; preserve that directory and back up any legacy
+`config.py` beside the old executable before uninstalling. Avoid keeping both
+installation scopes installed at the same time.
+
+### Start on Windows login
+
+Autostart always belongs to an individual Windows user. A per-user installation
+offers the **Start Exchange Mirror on Windows login** setup task. For an
+all-users installation, each user enables **Start on Windows login** in the
+application's **Settings** after launching it normally. The global installer
+does not create a startup entry for the administrator account or enable startup
+for everyone. Existing per-user startup entries remain in place during updates
+in the same scope and directory. Disable autostart in Settings before uninstalling,
+especially for an all-users installation, whose uninstaller cannot clean up every
+user's startup entry.
 
 ## How Syncing Works
 

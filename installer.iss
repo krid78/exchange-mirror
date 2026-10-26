@@ -1,5 +1,7 @@
 [Setup]
 AppName=Exchange Mirror
+; Keep the historical identity (previously defaulted to AppName) for updates.
+AppId=Exchange Mirror
 AppVersion=1.0
 AppPublisher=Exchange Mirror
 DefaultDirName={autopf}\Exchange Mirror
@@ -11,7 +13,9 @@ Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
+UsePreviousPrivileges=yes
 
 [Files]
 ; Main executable and runtime
@@ -29,11 +33,12 @@ Name: "{autodesktop}\Exchange Mirror"; Filename: "{app}\mirror.exe"; Tasks: desk
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
-Name: "startup"; Description: "Start Exchange Mirror on Windows &login"; GroupDescription: "Windows startup:"
+; Global installs leave per-user startup preferences to the application.
+Name: "startup"; Description: "Start Exchange Mirror on Windows &login"; GroupDescription: "Windows startup:"; Check: not IsAdminInstallMode
 
 [Registry]
-; Auto-start on login (only if user checked the startup task)
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ExchangeMirror"; ValueData: """{app}\mirror.exe"""; Flags: uninsdeletevalue; Tasks: startup
+; Never write to the elevated installer's user profile in global install mode.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ExchangeMirror"; ValueData: """{app}\mirror.exe"""; Flags: uninsdeletevalue; Tasks: startup; Check: not IsAdminInstallMode
 
 [Run]
 Filename: "{app}\mirror.exe"; Description: "Launch Exchange Mirror now"; Flags: nowait postinstall skipifsilent
