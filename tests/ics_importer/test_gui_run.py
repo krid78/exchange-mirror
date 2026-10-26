@@ -15,6 +15,10 @@ from test_sync import target
 
 
 class ConfirmationTests(TestCase):
+    def test_read_diagnostic_is_in_final_report(self):
+        result = RunResult(RunStatus.FAILED, failure=RunFailure("write", "OutlookReadError", diagnostic="inventory_changed"))
+        self.assertIn("Outlook read diagnostic: inventory_changed", run_summary(result))
+
     def test_declined_confirmation_never_grants_execution(self):
         self.assertIsNone(confirm_preview(preview(profile()), lambda *args: False))
 

@@ -79,6 +79,23 @@ def reader(selected):
 
 
 class OutlookReadTests(TestCase):
+    def test_inventory_diagnostics_distinguish_change_invalid_marker_and_com_failure(self):
+        class ComFailure(Exception):
+            hresult = -2147352567
+            excepinfo = (0, "PRIVATE", "PRIVATE", None, 0, -2147221233)
+        com_items = Items([item()])
+        com_items.GetNext = Mock(side_effect=ComFailure("PRIVATE"))
+        cases = [(Items([item()], count=2), "inventory_changed"),
+                 (Items([item(values={MARKER_KEY: "broken"})]), "inventory_invalid"),
+                 (Items([item(), item()]), "inventory_duplicate"),
+                 (com_items, "inventory_com HRESULT=0x80020009 SCODE=0x8004010F")]
+        for records, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic), self.assertRaises(OutlookReadError) as caught:
+                reader(folder(Items=records)).read_inventory(profile().destination)
+            self.assertEqual(caught.exception.diagnostic, diagnostic)
+            self.assertNotIn("PRIVATE", caught.exception.diagnostic)
+            self.assertNotIn("PRIVATE", str(caught.exception))
+
     def test_complete_read_without_date_filter_or_recurrence_expansion(self):
         first, second = item(), item("two", values={})
         selected = folder([first, second])

@@ -12,7 +12,7 @@ from unittest.mock import Mock
 from ics_http import FeedSnapshot
 from ics_lock import RunBusyError, target_lock
 from ics_model import OperationKind, TargetState
-from ics_outlook import OutlookCreateError, OutlookUpdateError
+from ics_outlook import OutlookCreateError, OutlookUpdateError, OutlookReadError
 from ics_run import ImportCoordinator, PreviewError, RunApprovals, RunStatus
 from ics_source import parse_ics
 from ics_sync import TargetInventory, UnmanagedItem, project_event
@@ -66,6 +66,18 @@ class MemoryAdapter:
 
 
 class CoordinatorTests(TestCase):
+    def test_read_failure_diagnostic_survives_without_retry_or_raw_error_text(self):
+        preview = self.runner.preview(self.profile)
+        self.adapter.create_appointment = Mock(side_effect=OutlookReadError("PRIVATE", code="inventory_changed"))
+        with self.assertLogs("ics_importer.run", level="WARNING") as captured:
+            result = self.runner.execute(self.profile, preview)
+        self.assertEqual(result.status, RunStatus.FAILED)
+        self.assertEqual(result.failure.diagnostic, "inventory_changed")
+        self.assertFalse(result.failure.outcome_unknown)
+        self.adapter.create_appointment.assert_called_once()
+        self.assertIn("inventory_changed", str(captured.output))
+        self.assertNotIn("PRIVATE", str(captured.output) + repr(result.failure))
+
     def setUp(self):
         self.temp = TemporaryDirectory(dir=Path(__file__).resolve().parent)
         self.addCleanup(self.temp.cleanup)

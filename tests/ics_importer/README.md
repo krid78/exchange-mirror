@@ -1,5 +1,9 @@
 # ICS importer test foundation
 
+Read-error regression tests distinguish changing/duplicated inventories, invalid
+markers and numeric COM errors without leaking error descriptions. Coordinator
+and GUI tests verify diagnostic propagation and that a failed create is not retried.
+
 ## End-to-end acceptance (step 18)
 
 See [ACCEPTANCE.md](ACCEPTANCE.md) for the opt-in real Outlook test, observed
