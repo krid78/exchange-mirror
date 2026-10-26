@@ -1,5 +1,22 @@
 # ICS importer test foundation
 
+## Single-item deletion (step 14)
+
+`test_outlook_delete.py` checks confirmation/operation shape, scoped deletion with
+an unmarked neighbor, stale/missing targets, post-inventory parent/marker changes,
+foreign-profile expectations, unknown schemas and duplicates. Meetings, recipients
+and unsaved edits prevent deletion. Failures before/after removal, failed readback
+and a reappearing identity must not trigger retries or false success. Save/Send are
+never invoked by the delete path.
+
+Authorized real Outlook check on 2026-10-26 in **Exchange Mirror Importer Test**:
+two synthetic items were created. With confirmed synthetic coverage, the pure planner
+produced one DELETE for the missing source and retained the sentinel. The adapter
+rejected an unconfirmed call, deleted exactly the planned target, and verified the
+remaining sentinel's complete state. Repeating the stale operation was rejected.
+The sentinel was then removed by the isolated harness; the test calendar is empty.
+No existing user calendar items were changed and no messages were sent.
+
 ## In-place updates (step 13)
 
 `test_outlook_update.py` verifies retained EntryID/identity, text/location/time
