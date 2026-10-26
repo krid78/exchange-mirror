@@ -1,5 +1,22 @@
 # ICS importer test foundation
 
+## Deletion planning (step 10)
+
+`test_deletions.py` checks confirmed versus missing/partial coverage, explicit
+occurrence/UID cancellations, destination/profile/schema ownership, foreign and
+unmanaged records, historical/narrowed windows, moved events, conflict handling,
+and independent preview/empty-snapshot/large-removal confirmations. No test invokes
+Outlook deletion; assertions inspect proposed operations and blocked candidates.
+Profile tests also cover coverage persistence, old v1 compatibility and authority
+reset after a source URL change.
+
+Separate manual integration check on 2026-10-26: the authorized HTTPS source
+returned 51,302 bytes; parsing produced 87 events and planning against a synthetic
+empty inventory proposed 87 creates with no conflicts. No Outlook access, profile
+write, source data commit or calendar mutation was involved. This one-time network
+check is not part of the repeatable offline test command below and does not prove
+the source's complete export coverage or future UID stability.
+
 ## Upsert planning (step 9)
 
 `test_sync.py` covers create-to-unchanged idempotence, field and fixed-flag repairs,

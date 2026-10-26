@@ -9,7 +9,7 @@ from unittest import TestCase
 from unittest.mock import patch
 from uuid import UUID
 
-from ics_profiles import (Destination, ImportProfile, ProfileError, default_profiles_path,
+from ics_profiles import (Destination, ExportCoverage, ImportProfile, ProfileError, default_profiles_path,
                           load_profiles, save_profiles, update_profile)
 
 
@@ -84,3 +84,18 @@ class ProfileTests(TestCase):
         with patch.dict("ics_profiles.os.environ", {}, clear=True):
             with self.assertRaises(ProfileError):
                 default_profiles_path()
+
+    def test_coverage_roundtrip_reset_and_old_v1_compatibility(self):
+        coverage = ExportCoverage(date(2026, 1, 1), date(2027, 1, 1), True)
+        selected = replace(profile(), source_coverage=coverage)
+        save_profiles([selected], self.path)
+        self.assertEqual(load_profiles(self.path), (selected,))
+        changed = update_profile(selected, source_url=selected.source_url + "new", confirm_source_change=True)
+        self.assertIsNone(changed.source_coverage)
+        self.assertEqual(changed.profile_id, selected.profile_id)
+        document = json.loads(self.path.read_text())
+        del document["profiles"][0]["source_coverage"]
+        self.path.write_text(json.dumps(document))
+        self.assertIsNone(load_profiles(self.path)[0].source_coverage)
+        with self.assertRaises(ProfileError):
+            ExportCoverage(date(2026, 1, 1), date(2027, 1, 1), "yes")
