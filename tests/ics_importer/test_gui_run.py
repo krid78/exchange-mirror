@@ -51,6 +51,33 @@ class ConfirmationTests(TestCase):
 
 
 class GuiRunTests(GuiHarness, TestCase):
+    def test_verified_row_updates_before_worker_finishes_and_ignores_stale_updates(self):
+        self.prepare()
+        entered, release = Event(), Event()
+        def slow(selected, reviewed, **kwargs):
+            operation = reviewed.plan.operations[0]
+            kwargs["progress"](RunProgress("verified", 1, 1, operation.kind, operation.identity.key))
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError
+            return self.result(selected, reviewed, **kwargs)
+        self.coordinator.execute.side_effect = slow
+        self.app.synchronize()
+        self.assertTrue(entered.wait(3))
+        try:
+            self.app._poll_progress()
+            row = self.app.tree.get_children()[0]
+            self.assertEqual(self.app.tree.set(row, "action"), "New verified")
+            self.assertTrue(self.app.jobs.busy)
+            self.assertIsNone(self.app.last_result)
+            key = next(iter(self.app._row_keys.values()))
+            self.app._progress_updates.put((self.app._generation - 1, RunProgress("verified", 1, 1, OperationKind.DELETE, key)))
+            self.app._poll_progress()
+            self.assertEqual(self.app.tree.set(row, "action"), "New verified")
+        finally:
+            release.set()
+        self.complete_jobs()
+
     def test_coverage_help_explains_missing_imports_without_granting_permission(self):
         self.app.complete_export.set(False)
         self.app.explain_coverage()

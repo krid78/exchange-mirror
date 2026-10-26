@@ -312,6 +312,8 @@ class CoordinatorTests(TestCase):
         result = self.runner.execute(self.profile, self.runner.preview(self.profile), approvals=self.approvals, progress=updates.append)
         self.assertEqual(result.status, RunStatus.COMPLETED)
         self.assertEqual([update.completed for update in updates if update.phase == "verified"], [1, 2, 3])
+        self.assertEqual([(update.operation_kind, update.identity_key) for update in updates if update.phase == "verified"],
+                         [(receipt.operation.kind, receipt.operation.identity.key) for receipt in result.completed])
         self.assertTrue(any(update.phase == "rechecking" and update.completed == 2 for update in updates))
         self.body = calendar(event("a", "Another update"), event("b")).encode()
         def broken(update):

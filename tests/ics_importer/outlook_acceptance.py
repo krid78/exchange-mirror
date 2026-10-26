@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from ics_http import FeedSnapshot
 from ics_model import TargetState
-from ics_outlook import describe_calendar, outlook_session
+from ics_outlook import describe_calendar, outlook_session, OutlookReadError
 from ics_profiles import Destination, ExportCoverage, ImportProfile
 from ics_run import ImportCoordinator, RunApprovals, RunStatus
 
@@ -198,4 +198,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except OutlookReadError as error:
+        print("Read diagnostic:", error.diagnostic, flush=True)
+        raise

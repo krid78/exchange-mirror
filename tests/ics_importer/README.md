@@ -1,5 +1,12 @@
 # ICS importer test foundation
 
+`test_outlook_cache.py` covers change-key reuse, changed/new/deleted records,
+corrupt-marker detection after edits, table short/long EntryID comparison,
+stable-snapshot retries and bounded failure under continuous changes, item limits,
+duplicate rows, missing-key fallback and session cleanup. Coordinator tests verify
+per-item identities in verified progress; a paused-worker GUI test checks the row
+update before worker completion and rejects stale-generation progress.
+
 Read-error regression tests distinguish changing/duplicated inventories, invalid
 markers and numeric COM errors without leaking error descriptions. Coordinator
 and GUI tests verify diagnostic propagation and that a failed create is not retried.

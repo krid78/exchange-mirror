@@ -1,5 +1,29 @@
 # Step 18 acceptance protocol
 
+## Follow-up: change-key cache and live row progress (2026-10-26)
+
+The opt-in command below was rerun successfully after introducing the session-local
+change-key cache: crash/restart, idempotency, stable updates, cancellation/removal,
+Busy=2 and Mirror isolation all passed. Cleanup verified the fixture empty. While
+implementing the cache the real test caught differing short-term table EntryIDs
+and long-term item EntryIDs; the final implementation verifies their equivalence
+through Outlook. The test harness now prints sanitized read diagnostics on failure.
+
+A separately authorized **read-only** measurement against the configured calendar
+containing 1,702 items measured 23.857 seconds for the initial inventory and 0.118 /
+0.141 seconds for two consecutive inventories in the same session. This measures
+inventory reads, not complete per-appointment Save/verification time. No production
+appointments or profiles were changed. The first inventory of each new session
+still reads all items. Store/provider support determines whether the fast path is
+available; unsupported providers use the complete scan.
+
+Automatic regressions additionally cover concurrent changes between table
+snapshots, two discarded reads followed by failure (three attempts maximum),
+changed corrupt markers, and live per-row progress while the worker is paused.
+Follow-up result: **212 tests passed**, `pip check` passed. After the final
+table-lifetime adjustment, all eight cache regressions and the real Outlook
+acceptance run passed again.
+
 Run date: 2026-10-26, Windows, classic Outlook already running, Python 3.12 in
 the project `.venv`, pywin32 312. The user separately reported successful GUI
 testing. No messages or meeting invitations were sent. No production-calendar
