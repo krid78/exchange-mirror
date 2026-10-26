@@ -1,5 +1,28 @@
 # ICS importer test foundation
 
+## Single-create adapter (step 12)
+
+`test_outlook_create.py` uses fake COM writes and independently reopened records.
+It verifies all markers/content/flags on the first Save, UTC-tagged marshaling
+inputs, exclusive all-day dates, long Unicode identities, LF/CRLF normalization,
+repeat calls without another Add/Save, existing-state conflicts and preflight errors.
+Save failures before/after persistence and readback/parent/marker/flag failures
+must report uncertainty without retrying or deleting. Unexpected recipients discard
+the unsaved object; no test sends a meeting response or invitation.
+
+Authorized real Outlook check on 2026-10-26: a new isolated calendar **Exchange
+Mirror Importer Test** was created below the standard calendar. An initial test
+found that naive UTC inputs were shifted by pywin32 through the machine timezone;
+the adapter now preserves explicit UTC tags. After that correction, a timed item
+with multiline body, a multi-day all-day item, and a timed item with a 1,082-character
+serialized Unicode identity all passed Save/reopen/content/marker/Busy checks.
+Repeated create calls returned the same EntryIDs and did not increase the count.
+All three synthetic items were removed by the isolated test harness; the test
+calendar remains empty for later steps. The initial diagnostic items were also
+removed. No existing calendar items were edited and no messages were sent.
+This proves the tested client/store roundtrip, not a restart or server free/busy
+verification; those remain later integration checks.
+
 ## Read-only Outlook adapter (step 11)
 
 `test_outlook_read.py` uses fake namespaces, folders, collections, custom properties
