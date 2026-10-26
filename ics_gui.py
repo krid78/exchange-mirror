@@ -197,6 +197,8 @@ def run_summary(result):
               RunStatus.BLOCKED: "Conflicts prevent synchronization.", RunStatus.BUSY: "Another run is using this profile and calendar."}
     counts = result.counts
     text = f"{labels[result.status]} Verified: {counts['create']} new, {counts['update']} updated, {counts['delete']} deleted; {counts['unchanged']} unchanged."
+    if result.failure and result.failure.diagnostic:
+        text += f" Outlook read diagnostic: {result.failure.diagnostic}."
     if result.failure and result.failure.outcome_unknown:
         text += " The last operation may already have been saved. Build a fresh preview before retrying."
     elif result.status in (RunStatus.FAILED, RunStatus.CANCELLED):

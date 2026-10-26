@@ -608,6 +608,19 @@ focus or send keyboard shortcuts to Outlook.
 
 ## Acceptance scope (step 18)
 
+Read failures during execution now include a static diagnostic in the final GUI
+report and console warning: `inventory_changed` (collection changed),
+`inventory_duplicate` (repeated EntryID), `inventory_invalid` (invalid item/marker),
+`inventory_com` (collection/property access), or `calendar_resolve`.
+Available numeric COM HRESULT/SCODE values are included in hexadecimal; raw COM
+descriptions and calendar contents are excluded. No write is retried automatically.
+Rebuild the preview before continuing after an error.
+
+The current defensive implementation scans the entire destination before each
+individual write. Large target calendars therefore substantially increase import
+time; this is not a network-download measurement. These diagnostics distinguish
+the observed read-error interruption from a failed Save without weakening guards.
+
 The isolated Outlook acceptance run verified interrupted-process recovery,
 idempotency, stable update identities, explicit cancellation and coverage-based
 removal, persisted Busy=2, and direct Mirror create/update/delete interoperability.

@@ -24,6 +24,30 @@ _SESSION_STATE = threading.local()
 class OutlookReadError(RuntimeError):
     """No usable complete inventory was obtained; no raw calendar data in errors."""
 
+    CODES = frozenset(("outlook_read", "calendar_resolve", "inventory_limit",
+                       "inventory_changed", "inventory_duplicate", "inventory_invalid", "inventory_com"))
+
+    def __init__(self, message, *, code="outlook_read", cause=None):
+        super().__init__(message)
+        self.code = code if code in self.CODES else "outlook_read"
+        # Keep only numeric COM codes, never descriptions, paths or source content.
+        self.hresult = self.scode = None
+        if cause is not None:
+            value = getattr(cause, "hresult", None)
+            if type(value) is int:
+                self.hresult = value
+            details = getattr(cause, "excepinfo", None)
+            if isinstance(details, tuple) and len(details) > 5 and type(details[5]) is int:
+                self.scode = details[5]
+
+    @property
+    def diagnostic(self):
+        parts = [self.code]
+        for label, value in (("HRESULT", self.hresult), ("SCODE", self.scode)):
+            if value is not None:
+                parts.append(f"{label}=0x{value & 0xffffffff:08X}")
+        return " ".join(parts)
+
 
 class OutlookCreateError(RuntimeError):
     """A create may have persisted: re-inventory before any retry, never assume rollback."""
@@ -224,8 +248,9 @@ class OutlookReader:
             return folder
         except OutlookReadError:
             raise
-        except Exception:
-            raise OutlookReadError("Cannot resolve the selected Outlook calendar") from None
+        except Exception as error:
+            raise OutlookReadError("Cannot resolve the selected Outlook calendar",
+                                   code="calendar_resolve", cause=error) from None
 
     def read_inventory(self, destination, *, max_items=100000):
         if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items <= 0:
@@ -237,22 +262,26 @@ class OutlookReader:
             items.IncludeRecurrences = False
             expected = items.Count
             if expected < 0 or expected > max_items:
-                raise OutlookReadError("Calendar inventory exceeds its item limit")
+                raise OutlookReadError("Calendar inventory exceeds its item limit", code="inventory_limit")
             result = []
             item = items.GetFirst()
             while item is not None:
                 if len(result) >= max_items:
-                    raise OutlookReadError("Calendar inventory exceeds its item limit")
+                    raise OutlookReadError("Calendar inventory exceeds its item limit", code="inventory_limit")
                 result.append(_read_item(item, self._separator))
                 item = items.GetNext()
             if len(result) != expected or items.Count != expected:
-                raise OutlookReadError("Calendar changed during inventory; retry the read")
+                raise OutlookReadError("Calendar changed during inventory; retry the read", code="inventory_changed")
+            if len({entry.entry_id.casefold() for entry in result}) != len(result):
+                raise OutlookReadError("Calendar repeated an item during inventory", code="inventory_duplicate")
             # Duplicate source keys remain distinct records, enabling planner conflicts.
             return TargetInventory(destination, tuple(result))
         except OutlookReadError:
             raise
-        except Exception:
-            raise OutlookReadError("Cannot read a complete Outlook calendar inventory") from None
+        except Exception as error:
+            raise OutlookReadError("Cannot read a complete Outlook calendar inventory",
+                                   code="inventory_invalid" if isinstance(error, (ValueError, TypeError)) else "inventory_com",
+                                   cause=error) from None
 
 
 class OutlookWriter(OutlookReader):

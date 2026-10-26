@@ -74,6 +74,7 @@ class RunFailure:
     outcome_unknown: bool = False
     identity_key: str | None = None
     operation_kind: OperationKind | None = None
+    diagnostic: str | None = None
 
 
 @dataclass(frozen=True)
@@ -259,6 +260,8 @@ class ImportCoordinator:
                                                                      OutlookCreateConflict, ValueError))
             failure = RunFailure(phase, type(error).__name__, unknown,
                                  active.identity.key if active is not None else None,
-                                 active.kind if active is not None else None)
-            log.warning("Importer stopped in %s (%s)", phase, type(error).__name__)
+                                 active.kind if active is not None else None,
+                                 error.diagnostic if isinstance(error, OutlookReadError) else None)
+            log.warning("Importer stopped in %s (%s%s)", phase, type(error).__name__,
+                        ": " + failure.diagnostic if failure.diagnostic else "")
             return RunResult(RunStatus.FAILED, current, tuple(receipts), failure, unchanged)
