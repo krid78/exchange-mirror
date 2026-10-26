@@ -33,10 +33,11 @@ Step 9 adds pure target projection and create/update/unchanged/conflict planning
 Step 10 adds coverage-aware deletion candidates and explicit confirmation gates.
 Step 11 adds the read-only classic Outlook adapter in `ics_outlook.py`.
 Step 12 adds an explicit single-appointment create and verification path.
-There is no importer command, UI, update/delete adapter or run coordinator yet.
+Step 13 adds optimistic in-place updates of verified owned appointments.
+There is no importer command, UI, delete adapter or run coordinator yet.
 The existing Exchange Mirror behavior is unchanged.
 
-Later steps will add Outlook update/delete operations, user interface, coordination and
+Later steps will add Outlook delete operations, user interface, coordination and
 packaging in individually reviewable changes.
 
 ## Event identity contract
@@ -399,3 +400,26 @@ remain step 15 concerns; the inventory preflight is not an atomic transaction.
 References: [custom property creation](https://learn.microsoft.com/en-us/office/vba/api/outlook.userproperties.add),
 [initial property values](https://learn.microsoft.com/en-us/office/vba/api/outlook.userproperty.value),
 [Save](https://learn.microsoft.com/en-us/office/vba/api/outlook.appointmentitem.save).
+
+## In-place updates (step 13)
+
+`update_appointment(destination, source, expected)` requires a known-schema
+`TargetState` from a recent inventory and an equal source identity. It rereads the
+full inventory, requires one exact matching target snapshot, then reopens by ID
+and checks destination, markers, content and flags again. Changed state, duplicate
+identity, moved item or unsaved edits cause `OutlookWriteConflict` without mutation;
+read/marker failures abort safely. It never falls back to Create or adopts an
+unmarked item. Appointments with meeting recipients cannot be modified by this API.
+
+If projected state already matches, no Save occurs. Otherwise the existing object
+receives the same validated fields/flags and COM date handling as creation. Markers
+and the original occurrence key remain unchanged. After Save, the item is reopened
+under the same EntryID in the same store/folder and compared with the desired state.
+Switching between timed and all-day content is supported; no replacement copy,
+invitation, response or deletion is generated.
+
+`OutlookUpdateError` carries `save_attempted` and the expected EntryID. Save/readback
+failures are uncertain outcomes, not successful updates or implicit retries. A
+failure before Save attempts to discard only unsaved edits. These optimistic checks
+do not provide a transaction or eliminate all races with other clients; run-level
+coordination remains step 15.

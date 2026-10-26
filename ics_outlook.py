@@ -36,6 +36,17 @@ class OutlookCreateConflict(RuntimeError):
     """An existing identity prevents creation; no writes were attempted."""
 
 
+class OutlookWriteConflict(RuntimeError):
+    """Expected ownership or state changed; no mutation was attempted."""
+
+
+class OutlookUpdateError(RuntimeError):
+    def __init__(self, *, save_attempted, entry_id):
+        super().__init__("Appointment update or verification failed; re-read inventory before retrying")
+        self.save_attempted = save_attempted
+        self.entry_id = entry_id
+
+
 def _decode_identity(serialized):
     value = json.loads(serialized)
     if (not isinstance(value, list) or len(value) != 4 or value[0] != "ics-event-v1"
@@ -188,9 +199,9 @@ class OutlookReader:
 
 
 class OutlookWriter(OutlookReader):
-    """Explicit create only. Updates, deletion and run-level locking are later steps."""
+    """Explicit single-item writes; run-level locking remains a later step."""
 
-    def create_appointment(self, destination, source):
+    def _desired(self, source):
         desired = project_event(source)
         fields = desired.fields
         for value in (fields.subject, fields.body, fields.location, *fields.categories):
@@ -200,6 +211,62 @@ class OutlookWriter(OutlookReader):
             raise ValueError("Source category cannot be represented with the Windows separator")
         if not fields.all_day and (fields.start.microsecond or fields.end.microsecond):
             raise ValueError("Outlook appointment times require whole-second precision")
+        return desired
+
+    def _apply_fields(self, appointment, desired):
+        fields = desired.fields
+        appointment.AllDayEvent = fields.all_day
+        if fields.all_day:
+            # UTC tags preserve date-only midnight wall values through COM marshaling.
+            appointment.Start = datetime.combine(fields.start, time(), timezone.utc)
+            appointment.End = datetime.combine(fields.end, time(), timezone.utc)
+        else:
+            appointment.StartUTC = fields.start
+            appointment.EndUTC = fields.end
+        appointment.Subject = fields.subject
+        appointment.Body = fields.body
+        appointment.Location = fields.location
+        appointment.Categories = (self._separator + " ").join(fields.categories)
+        appointment.MeetingStatus = desired.meeting_status
+        appointment.BusyStatus = desired.busy_status
+        appointment.ReminderSet = desired.reminder_set
+        if appointment.Recipients.Count != 0:
+            raise ValueError("Import unexpectedly has recipients")
+
+    def _read_opened(self, appointment, destination, entry_id, identity):
+        parent = describe_calendar(appointment.Parent)
+        if (parent.store_id.casefold(), parent.folder_id.casefold()) != (
+                destination.store_id.casefold(), destination.folder_id.casefold()):
+            raise OutlookWriteConflict("Appointment is outside the selected destination")
+        observed = _read_item(appointment, self._separator)
+        if (not isinstance(observed, TargetState) or observed.identity != identity
+                or observed.entry_id.casefold() != entry_id.casefold()
+                or observed.marker_schema_version != 1):
+            raise OutlookWriteConflict("Appointment identity or marker schema changed")
+        return observed
+
+    def _open_expected(self, destination, expected):
+        if (not isinstance(expected, TargetState) or type(expected.marker_schema_version) is not int
+                or expected.marker_schema_version != 1):
+            raise ValueError("A known-schema target snapshot is required")
+        inventory = self.read_inventory(destination)
+        matches = [item for item in inventory.items
+                   if isinstance(item, TargetState) and item.identity == expected.identity]
+        if len(matches) != 1 or matches[0] != expected:
+            raise OutlookWriteConflict("Target snapshot is stale or ambiguous; re-plan")
+        try:
+            appointment = self._namespace.GetItemFromID(expected.entry_id, destination.store_id)
+            observed = self._read_opened(appointment, destination, expected.entry_id, expected.identity)
+            if observed != expected or not appointment.Saved:
+                raise OutlookWriteConflict("Target has changed or has unsaved edits; re-plan")
+            return appointment, observed
+        except OutlookWriteConflict:
+            raise
+        except Exception:
+            raise OutlookReadError("Cannot reopen and verify the expected target") from None
+
+    def create_appointment(self, destination, source):
+        desired = self._desired(source)
         inventory = self.read_inventory(destination)
         matches = [item for item in inventory.items
                    if isinstance(item, TargetState) and item.identity == source.identity]
@@ -216,26 +283,7 @@ class OutlookWriter(OutlookReader):
         entry_id = None
         try:
             appointment = folder.Items.Add(1)  # olAppointmentItem, unsaved
-            appointment.AllDayEvent = fields.all_day
-            if fields.all_day:
-                # UTC tags preserve COM DATE wall values through pywin32 conversion;
-                # for all-day Start/End these are calendar midnights, not UTC events.
-                appointment.Start = datetime.combine(fields.start, time(), timezone.utc)
-                appointment.End = datetime.combine(fields.end, time(), timezone.utc)
-            else:
-                # pywin32 converts naive datetimes through the machine timezone.
-                # Keep the UTC tag so StartUTC/EndUTC receive the intended instant.
-                appointment.StartUTC = fields.start
-                appointment.EndUTC = fields.end
-            appointment.Subject = fields.subject
-            appointment.Body = fields.body
-            appointment.Location = fields.location
-            appointment.Categories = (self._separator + " ").join(fields.categories)
-            appointment.MeetingStatus = desired.meeting_status
-            appointment.BusyStatus = desired.busy_status
-            appointment.ReminderSet = desired.reminder_set
-            if appointment.Recipients.Count != 0:
-                raise ValueError("New import unexpectedly has recipients")
+            self._apply_fields(appointment, desired)
             values = {MARKER_PROFILE: str(source.identity.profile_id),
                       MARKER_IDENTITY: source.identity.serialize(), MARKER_KEY: source.identity.key,
                       MARKER_SCHEMA: "1"}
@@ -253,14 +301,8 @@ class OutlookWriter(OutlookReader):
             if not isinstance(entry_id, str) or not entry_id:
                 raise ValueError("Saved appointment has no EntryID")
             fresh = self._namespace.GetItemFromID(entry_id, destination.store_id)
-            parent = describe_calendar(fresh.Parent)
-            if (parent.store_id.casefold(), parent.folder_id.casefold()) != (
-                    destination.store_id.casefold(), destination.folder_id.casefold()):
-                raise ValueError("Saved appointment is not in the selected destination")
-            observed = _read_item(fresh, self._separator)
-            if (not isinstance(observed, TargetState) or observed.identity != source.identity
-                    or observed.entry_id.casefold() != entry_id.casefold()
-                    or observed.marker_schema_version != 1 or not target_matches(desired, observed)):
+            observed = self._read_opened(fresh, destination, entry_id, source.identity)
+            if not target_matches(desired, observed):
                 raise ValueError("Saved appointment does not match the requested state")
             return observed
         except Exception:
@@ -270,6 +312,37 @@ class OutlookWriter(OutlookReader):
                 except Exception:
                     pass
             raise OutlookCreateError(save_attempted=save_attempted, entry_id=entry_id) from None
+
+    def update_appointment(self, destination, source, expected):
+        desired = self._desired(source)
+        if not isinstance(expected, TargetState) or source.identity != expected.identity:
+            raise ValueError("Source and expected target identities must match")
+        appointment, observed = self._open_expected(destination, expected)
+        if target_matches(desired, observed):
+            return observed
+        try:
+            recipient_count = appointment.Recipients.Count
+        except Exception:
+            raise OutlookReadError("Cannot verify the target's recipient state") from None
+        if recipient_count != 0:
+            raise OutlookWriteConflict("Cannot update an import with meeting recipients")
+        save_attempted = False
+        try:
+            self._apply_fields(appointment, desired)
+            save_attempted = True
+            appointment.Save()
+            fresh = self._namespace.GetItemFromID(expected.entry_id, destination.store_id)
+            updated = self._read_opened(fresh, destination, expected.entry_id, source.identity)
+            if not target_matches(desired, updated):
+                raise ValueError("Saved update does not match the desired state")
+            return updated
+        except Exception:
+            if not save_attempted:
+                try:
+                    appointment.Close(1)  # Discard only unsaved edits; never roll back a Save.
+                except Exception:
+                    pass
+            raise OutlookUpdateError(save_attempted=save_attempted, entry_id=expected.entry_id) from None
 
 
 @contextmanager
