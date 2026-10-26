@@ -1,4 +1,4 @@
-"""Manual preview-only importer entry point; nothing starts when imported."""
+"""Manual ICS importer entry point; nothing starts when imported."""
 
 import argparse
 from pathlib import Path
@@ -8,7 +8,7 @@ from ics_gui import ImporterWindow
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Preview ICS calendar synchronization without changing appointments.")
+    parser = argparse.ArgumentParser(description="Review and explicitly synchronize a public ICS feed into an Outlook calendar.")
     parser.add_argument("--profiles", type=Path, help="Optional alternate profiles JSON file")
     args = parser.parse_args()
     root = tk.Tk()

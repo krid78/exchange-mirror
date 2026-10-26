@@ -11,8 +11,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ics_model import OperationKind
 from ics_outlook import inspect_calendar, pick_calendar
-from ics_profiles import Destination, ImportProfile, load_profiles, save_profiles, update_profile
-from ics_run import ImportCoordinator
+from ics_profiles import Destination, ExportCoverage, ImportProfile, load_profiles, save_profiles, update_profile
+from ics_run import ImportCoordinator, RunApprovals, RunStatus
 
 
 class FormError(ValueError):
@@ -163,6 +163,47 @@ def read_error_message(kind, error_type):
     return "The read operation could not be completed. No appointments were changed."
 
 
+_APPROVAL_BLOCKERS = {"Deletion preview requires explicit confirmation", "Empty snapshot requires separate confirmation",
+                      "Large removal requires separate confirmation"}
+
+
+def confirm_preview(preview, ask):
+    """Confirm only the displayed eligible changes; data/scope blockers cannot be overridden."""
+    counts = {kind: sum(op.kind is kind for op in preview.plan.operations) for kind in (OperationKind.CREATE, OperationKind.UPDATE)}
+    eligible = [candidate for candidate in preview.plan.pending_deletions if set(candidate.blockers) <= _APPROVAL_BLOCKERS]
+    pending = len(preview.plan.pending_deletions) - len(eligible)
+    if preview.plan.has_conflicts:
+        raise FormError("Resolve the listed conflicts before synchronizing.")
+    if counts[OperationKind.CREATE] or counts[OperationKind.UPDATE] or eligible:
+        text = (f"Destination: {preview.profile.destination.display_name}\n"
+                f"New: {counts[OperationKind.CREATE]}\nUpdates: {counts[OperationKind.UPDATE]}\nDeletions: {len(eligible)}\n"
+                f"Removals that remain pending: {pending}\n\nApply these changes?")
+        if not ask("Synchronize reviewed preview?", text):
+            return None
+    blockers = {blocker for candidate in eligible for blocker in candidate.blockers}
+    empty = "Empty snapshot requires separate confirmation" in blockers
+    large = "Large removal requires separate confirmation" in blockers
+    if empty and not ask("Confirm empty source", "The source calendar contains no events. Delete the reviewed eligible imports despite the empty source?"):
+        return None
+    if large and not ask("Confirm large removal", "The reviewed removals exceed the normal removal threshold. Apply these deletions?"):
+        return None
+    return RunApprovals(bool(eligible), empty, large)
+
+
+def run_summary(result):
+    labels = {RunStatus.COMPLETED: "Synchronization complete.", RunStatus.PENDING: "Changes completed; some removals remain pending.",
+              RunStatus.REVIEW_REQUIRED: "Source or calendar changed. Review the refreshed preview before running again.",
+              RunStatus.FAILED: "Synchronization stopped after an error.", RunStatus.CANCELLED: "Synchronization cancelled between operations.",
+              RunStatus.BLOCKED: "Conflicts prevent synchronization.", RunStatus.BUSY: "Another run is using this profile and calendar."}
+    counts = result.counts
+    text = f"{labels[result.status]} Verified: {counts['create']} new, {counts['update']} updated, {counts['delete']} deleted; {counts['unchanged']} unchanged."
+    if result.failure and result.failure.outcome_unknown:
+        text += " The last operation may already have been saved. Build a fresh preview before retrying."
+    elif result.status in (RunStatus.FAILED, RunStatus.CANCELLED):
+        text += " Earlier saved changes remain. Build a fresh preview before continuing."
+    return text
+
+
 class ImporterWindow:
     def __init__(self, root, *, profiles_path=None, coordinator=None, picker=pick_calendar,
                  inspector=inspect_calendar, dialogs=messagebox):
@@ -171,6 +212,11 @@ class ImporterWindow:
         self.picker, self.inspector = picker, inspector
         self.jobs = ReadJobs()
         self.last_preview = None
+        self.last_result = None
+        self._executing = False
+        self._cancel = threading.Event()
+        self._progress_updates = Queue()
+        self._row_keys = {}
         self._base = None
         self._generation = 0
         self._loading = self._closing = False
@@ -187,9 +233,13 @@ class ImporterWindow:
         self.summary = tk.StringVar(root, "No preview yet.")
         self.time_hint = tk.StringVar(root, "All-day end dates are exclusive.")
         self.selection_note = tk.StringVar(root, "Select a row to see its full review note.")
+        self.report = tk.StringVar(root, "")
+        self.picker_notice = tk.StringVar(root, "")
+        self.complete_export = tk.BooleanVar(root, False)
         self._build()
-        for value in self.values.values():
-            value.trace_add("write", self._changed)
+        for name, value in self.values.items():
+            value.trace_add("write", lambda *args, field=name: self._changed(field))
+        self.complete_export.trace_add("write", lambda *args: self._changed("coverage"))
         self._populate(self.profiles[0] if self.profiles else None)
         if self._profile_load_error:
             self.status.set("Profiles could not be loaded. Saving is disabled to preserve the existing file.")
@@ -198,7 +248,7 @@ class ImporterWindow:
         self._poll_id = self.root.after(80, self._poll)
 
     def _build(self):
-        self.root.title("ICS Calendar Importer — Preview")
+        self.root.title("ICS Calendar Importer")
         self.root.geometry("1120x760")
         self.root.minsize(920, 600)
         frame = ttk.Frame(self.root, padding=16)
@@ -206,7 +256,7 @@ class ImporterWindow:
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(9, weight=1)
         ttk.Label(frame, text="ICS Calendar Importer", font=("Segoe UI", 16, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(frame, text="Preview only — no appointments will be changed.").grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 14))
+        ttk.Label(frame, text="Build and review a preview before applying changes to Outlook.").grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 14))
         toolbar = ttk.Frame(frame)
         toolbar.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 12))
         toolbar.columnconfigure(1, weight=1)
@@ -218,6 +268,9 @@ class ImporterWindow:
         self.new_button.grid(row=0, column=2, padx=(8, 4))
         self.save_button = ttk.Button(toolbar, text="Save profile", command=self.save_profile)
         self.save_button.grid(row=0, column=3)
+        self.picker_notice_label = ttk.Label(toolbar, textvariable=self.picker_notice, foreground="#8c5900", wraplength=1000)
+        self.picker_notice_label.grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        self.picker_notice_label.grid_remove()
         if self._profile_load_error:
             ttk.Label(toolbar, text="Profiles file unreadable: saving is disabled. Repair the file and restart to save profiles.",
                       foreground="#9a2929", wraplength=800).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
@@ -246,10 +299,16 @@ class ImporterWindow:
         actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         self.preview_button = ttk.Button(actions, text="Build preview", command=self.build_preview)
         self.preview_button.pack(side="left")
+        self.execute_button = ttk.Button(actions, text="Synchronize preview", command=self.synchronize)
+        self.execute_button.pack(side="left", padx=(8, 0))
+        self.cancel_button = ttk.Button(actions, text="Cancel run", command=self.cancel_run, state="disabled")
+        self.cancel_button.pack(side="left", padx=(8, 0))
         self.progress = ttk.Progressbar(actions, mode="indeterminate", length=150)
         self.progress.pack(side="left", padx=14)
         self.summary_label = ttk.Label(actions, textvariable=self.summary, wraplength=600)
         self.summary_label.pack(side="left")
+        self.coverage_check = ttk.Checkbutton(dates, text="Source export is complete for the selected From/Until period (allows missing-event removal)", variable=self.complete_export)
+        self.coverage_check.grid(row=1, column=0, columnspan=6, sticky="w", pady=(8, 0))
         table = ttk.Frame(frame)
         table.grid(row=9, column=0, columnspan=3, sticky="nsew")
         table.rowconfigure(0, weight=1)
@@ -272,13 +331,15 @@ class ImporterWindow:
         self.note_label.grid(row=11, column=0, columnspan=3, sticky="w", pady=(0, 8))
         self.status_label = ttk.Label(frame, textvariable=self.status, wraplength=1000)
         self.status_label.grid(row=12, column=0, columnspan=3, sticky="w")
+        self.report_label = ttk.Label(frame, textvariable=self.report, wraplength=1000)
+        self.report_label.grid(row=13, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     def _resize(self, event):
         if event.widget is self.root:
             width = max(400, event.width - 40)
-            for label in (self.hint_label, self.time_label, self.note_label, self.status_label):
+            for label in (self.hint_label, self.time_label, self.note_label, self.status_label, self.report_label, self.picker_notice_label):
                 label.configure(wraplength=width)
-            self.summary_label.configure(wraplength=max(250, event.width - 400))
+            self.summary_label.configure(wraplength=max(180, event.width - 650))
 
     def _show_note(self, event=None):
         selected = self.tree.selection()
@@ -294,6 +355,8 @@ class ImporterWindow:
         form = new_form() if profile is None else ProfileForm(profile.profile_id, profile.name, profile.source_url,
                     profile.destination, profile.floating_timezone, profile.window_start.isoformat(), profile.window_end.isoformat())
         self._draft_id, self.destination = form.profile_id, form.destination
+        coverage = profile.source_coverage if profile else None
+        self.complete_export.set(bool(coverage and coverage.confirmed and coverage.start == profile.window_start and coverage.end == profile.window_end))
         for name, value in (("name", form.name), ("url", form.source_url), ("zone", form.timezone_name),
                             ("start", form.start_text), ("end", form.end_text),
                             ("destination", form.destination.display_name if form.destination else "")):
@@ -314,15 +377,23 @@ class ImporterWindow:
         if not self.jobs.busy and index >= 0:
             self._populate(self.profiles[index])
 
-    def _changed(self, *args):
+    def _changed(self, field=None, *args):
         if self._loading:
             return
+        if self._executing and self.jobs.busy:
+            self._cancel.set()
+        if field in ("url", "start", "end", "zone") and self.complete_export.get():
+            self.complete_export.set(False)
         self._generation += 1
         self.last_preview = None
+        self.last_result = None
+        self.report.set("")
+        self._row_keys.clear()
         self.tree.delete(*self.tree.get_children())
         self.summary.set("No preview yet.")
         self.selection_note.set("Select a row to see its full review note.")
         self.status.set("Inputs changed. Build a preview to inspect the proposed changes.")
+        self.execute_button.configure(state="disabled")
 
     def _collect(self):
         form = ProfileForm(self._draft_id, self.values["name"].get(), self.values["url"].get(), self.destination,
@@ -333,6 +404,8 @@ class ImporterWindow:
             if not self.dialogs.askyesno("Change profile mapping?", "This changes the source or destination for this profile. Existing imports will not be moved. A source change clears confirmed export coverage. Continue?", parent=self.root):
                 return None
             profile = build_profile(form, base=self._base, accept_mapping_change=True)
+        profile = replace(profile, source_coverage=ExportCoverage(profile.window_start, profile.window_end, True)
+                          if self.complete_export.get() else None)
         self._base = profile
         return profile
 
@@ -349,8 +422,12 @@ class ImporterWindow:
             if all(p.profile_id != profile.profile_id for p in self.profiles):
                 profiles.append(profile)
             save_profiles(profiles, self.profiles_path)
+            reviewed = self.last_preview if self.last_preview is not None and self.last_preview.profile == profile else None
             self.profiles = profiles
             self._populate(profile)
+            if reviewed is not None:
+                self._render_preview(reviewed)
+                self._set_busy(False)
             self.status.set("Profile saved. No appointments were changed.")
         except FormError as error:
             self.dialogs.showerror("Check profile", str(error), parent=self.root)
@@ -364,7 +441,12 @@ class ImporterWindow:
         for button in (self.new_button, self.pick_button, self.preview_button):
             button.configure(state="disabled" if busy else "normal")
         self.save_button.configure(state="disabled" if busy or self._profile_load_error else "normal")
+        self.coverage_check.configure(state="disabled" if busy else "normal")
+        saved = self.last_preview is not None and self.last_preview.profile in self.profiles
+        self.execute_button.configure(state="normal" if not busy and saved and not self.last_preview.plan.has_conflicts else "disabled")
+        self.cancel_button.configure(state="normal" if busy and self._executing else "disabled")
         if busy:
+            self.progress.configure(mode="indeterminate")
             self.progress.start(12)
         else:
             self.progress.stop()
@@ -372,6 +454,9 @@ class ImporterWindow:
     def choose_calendar(self):
         if self.jobs.busy:
             return
+        self.picker_notice.set("Outlook's folder dialog may open behind this window. Switch to Outlook with Alt+Tab or the taskbar to select a calendar or cancel.")
+        self.picker_notice_label.grid()
+        self.root.update_idletasks()
         self.jobs.start("picker", self._generation, self.picker)
         self._set_busy(True)
         self.status.set("Choose a calendar in Outlook's folder dialog. Cancel there to keep the current destination.")
@@ -395,6 +480,102 @@ class ImporterWindow:
         self._set_busy(True)
         self.status.set("Reading the source and Outlook calendar… No appointments will be changed.")
 
+    def synchronize(self):
+        if self.jobs.busy or self.last_preview is None:
+            return
+        reviewed = self.last_preview
+        try:
+            profile = self._collect()
+            if profile is None:
+                return
+            if profile not in load_profiles(self.profiles_path):
+                self.status.set("Save this profile before synchronizing so its import identity survives a restart.")
+                return
+            if profile != reviewed.profile:
+                self._changed()
+                self.status.set("Profile changed. Build and review a new preview.")
+                return
+            approvals = confirm_preview(reviewed, lambda title, text: self.dialogs.askyesno(title, text, parent=self.root))
+        except FormError as error:
+            self.dialogs.showerror("Cannot synchronize", str(error), parent=self.root)
+            return
+        except ValueError:
+            self.dialogs.showerror("Cannot load saved profile", "The saved profiles could not be verified. No synchronization was started.", parent=self.root)
+            return
+        if approvals is None:
+            self.status.set("Synchronization confirmation cancelled. No appointments were changed.")
+            return
+        self._cancel.clear()
+        self.report.set("")
+        self.last_result = None
+        self._executing = True
+        generation = self._generation
+        def execute():
+            return self.coordinator.execute(profile, reviewed, approvals=approvals, cancel_requested=self._cancel.is_set,
+                                            progress=lambda update: self._progress_updates.put((generation, update)))
+        self.jobs.start("run", generation, execute)
+        self._set_busy(True)
+        self.status.set("Checking the reviewed source and destination before synchronization…")
+
+    def cancel_run(self):
+        if self.jobs.busy and self._executing:
+            self._cancel.set()
+            self.cancel_button.configure(state="disabled")
+            self.status.set("Cancel requested. Waiting for the current operation; earlier saved changes remain.")
+
+    def _render_preview(self, preview, choice=None):
+        self.tree.delete(*self.tree.get_children())
+        self._row_keys.clear()
+        self.last_preview = preview
+        self._base = preview.profile
+        self.destination = preview.profile.destination
+        if choice is not None:
+            self._loading = True
+            self.values["destination"].set(choice.destination.display_name)
+            self._loading = False
+            self._show_choice(choice)
+        rows, zone = preview_rows(preview)
+        keys = [op.identity.key for op in preview.plan.operations] + [candidate.target.identity.key for candidate in preview.plan.pending_deletions]
+        for row, key in zip(rows, keys):
+            self._row_keys[self.tree.insert("", "end", values=row)] = key
+        counts = {kind: sum(row[0] == kind for row in rows) for kind in ("New", "Update", "Unchanged", "Conflict", "Deletion candidate")}
+        self.summary.set(" · ".join(f"{number} {kind.lower()}" for kind, number in counts.items()))
+        self.time_hint.set(f"Times shown in {zone}. All-day end dates are exclusive.")
+
+    def _show_run_result(self, result):
+        self.last_result = result
+        self.report.set(run_summary(result))
+        if result.status is RunStatus.REVIEW_REQUIRED and result.preview is not None:
+            self._render_preview(result.preview)
+            self.status.set("Review the refreshed preview. Previous confirmations were not carried forward.")
+        else:
+            self.last_preview = None
+            completed = {receipt.operation.identity.key: receipt.operation.kind for receipt in result.completed}
+            for row, key in self._row_keys.items():
+                if key in completed:
+                    self.tree.set(row, "action", _ACTIONS[completed[key]] + " verified")
+                elif result.failure and result.failure.identity_key == key:
+                    self.tree.set(row, "action", "Uncertain" if result.failure.outcome_unknown else "Failed")
+                elif result.status in (RunStatus.FAILED, RunStatus.CANCELLED) and self.tree.set(row, "action") in ("New", "Update", "Delete"):
+                    self.tree.set(row, "action", "Not executed")
+            self.status.set("Build a fresh preview before another run.")
+
+    def _poll_progress(self):
+        while True:
+            try:
+                generation, update = self._progress_updates.get_nowait()
+            except Empty:
+                break
+            if generation != self._generation or not self._executing:
+                continue
+            if update.total:
+                self.progress.stop()
+                self.progress.configure(mode="determinate", maximum=update.total, value=update.completed)
+            if not self._cancel.is_set():
+                self.status.set("Rechecking source and calendar before deletion…" if update.phase == "rechecking"
+                                else f"Synchronization: {update.completed} of {update.total} changes verified." if update.total
+                                else "Reading the current source and calendar…")
+
     def _show_choice(self, choice):
         if choice.is_default is True:
             self.calendar_hint.set(f"Account / store: {choice.store_name} — default calendar.")
@@ -404,17 +585,40 @@ class ImporterWindow:
             self.hint_label.configure(foreground="#8c5900")
 
     def _poll(self):
+        self._poll_progress()
         result = self.jobs.poll()
         if result is not None:
+            was_run = result.kind == "run"
+            self._executing = False
             self._set_busy(False)
+            if result.kind == "picker":
+                self.picker_notice.set("")
+                self.picker_notice_label.grid_remove()
             if self._closing:
+                if was_run and not result.error_type:
+                    self._show_run_result(result.value)
+                    self.dialogs.showinfo("Synchronization finished", run_summary(result.value), parent=self.root)
+                elif was_run:
+                    self.dialogs.showerror("Run interrupted", "Some changes may have been saved. Build a fresh preview before retrying.", parent=self.root)
                 self._destroy()
                 return
-            if result.generation != self._generation:
+            if result.generation != self._generation and was_run and not result.error_type:
+                self.last_preview = None
+                self.last_result = result.value
+                self.report.set(run_summary(result.value))
+                self.status.set("Inputs changed during execution. Saved changes remain; build a fresh preview.")
+            elif result.generation != self._generation and not was_run:
                 self.status.set("Inputs changed during the read. Build a new preview.")
             elif result.error_type:
-                self.status.set("Read failed. No appointments were changed.")
-                self.dialogs.showerror("Cannot complete read", read_error_message(result.kind, result.error_type), parent=self.root)
+                self.last_preview = None
+                if was_run:
+                    self.status.set("Run interrupted. Some changes may have been saved. Build a fresh preview before retrying.")
+                    self.report.set(self.status.get())
+                else:
+                    self.status.set("Read failed. No appointments were changed.")
+                    self.dialogs.showerror("Cannot complete read", read_error_message(result.kind, result.error_type), parent=self.root)
+            elif was_run:
+                self._show_run_result(result.value)
             elif result.kind == "picker":
                 if result.value is None:
                     self.status.set("Calendar selection cancelled.")
@@ -424,26 +628,21 @@ class ImporterWindow:
                     self._show_choice(result.value)
             else:
                 choice, preview = result.value
-                self._loading = True
-                self.destination = choice.destination
-                self.values["destination"].set(choice.destination.display_name)
-                self._loading = False
-                self.last_preview = preview
-                self._show_choice(choice)
-                rows, zone = preview_rows(preview)
-                for row in rows:
-                    self.tree.insert("", "end", values=row)
-                counts = {kind: sum(row[0] == kind for row in rows) for kind in ("New", "Update", "Unchanged", "Conflict", "Deletion candidate")}
-                self.summary.set(" · ".join(f"{number} {kind.lower()}" for kind, number in counts.items()))
-                self.time_hint.set(f"Times shown in {zone}. All-day end dates are exclusive.")
-                self.status.set("Preview ready. No appointments were changed. Review notes also explain pending removals.")
+                self._render_preview(preview, choice)
+                self.status.set("Preview ready. No appointments were changed."
+                                + (" Save the profile before synchronizing to preserve its import identity." if preview.profile not in self.profiles
+                                   else " Review the proposed changes before synchronizing."))
+            self._set_busy(False)
         if self._alive:
             self._poll_id = self.root.after(80, self._poll)
 
     def close(self):
         if self.jobs.busy:
             self._closing = True
-            self.status.set("Closing when the current read finishes. If Outlook's folder dialog is open, cancel it there.")
+            if self._executing:
+                self.cancel_run()
+            else:
+                self.status.set("Closing when the current read finishes. If Outlook's folder dialog is open, cancel it there.")
         else:
             self._destroy()
 

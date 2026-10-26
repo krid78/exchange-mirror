@@ -60,6 +60,14 @@ class OperationReceipt:
 
 
 @dataclass(frozen=True)
+class RunProgress:
+    phase: str
+    completed: int
+    total: int
+    operation_kind: OperationKind | None = None
+
+
+@dataclass(frozen=True)
 class RunFailure:
     phase: str
     error_type: str
@@ -150,7 +158,7 @@ class ImportCoordinator:
         except Exception as error:
             raise PreviewError(type(error).__name__) from None
 
-    def execute(self, profile, preview, *, approvals=None, cancel_requested=None):
+    def execute(self, profile, preview, *, approvals=None, cancel_requested=None, progress=None):
         """Accept only the exact preview; stale state returns a fresh preview and no new writes.
 
         A review-required result after some verified upserts preserves their receipts.
@@ -167,6 +175,13 @@ class ImportCoordinator:
         phase = "lock"
         active = None
         unchanged = 0
+        total = 0
+        def notify(stage):
+            if progress is not None:
+                try:
+                    progress(RunProgress(stage, len(receipts), total, active.kind if active else None))
+                except Exception:
+                    log.warning("Progress observer failed; synchronization state is unaffected")
         try:
             with target_lock(profile, directory=self.lock_directory):
                 if cancel():
@@ -174,6 +189,7 @@ class ImportCoordinator:
                 phase = "session"
                 with self.session_factory(write=True) as adapter:
                     phase = "capture"
+                    notify("reading")
                     current, sources, zone = self._capture(profile, adapter, RunApprovals())
                     if cancel():
                         return RunResult(RunStatus.CANCELLED, current)
@@ -186,6 +202,8 @@ class ImportCoordinator:
                         return RunResult(RunStatus.BLOCKED, current)
                     current = replace(current, plan=plan)
                     unchanged = sum(op.kind is OperationKind.UNCHANGED for op in plan.operations)
+                    total = sum(op.kind in (OperationKind.CREATE, OperationKind.UPDATE, OperationKind.DELETE) for op in plan.operations)
+                    notify("planned")
                     expected_items = {item.entry_id: item for item in current.inventory.items}
                     for kind in (OperationKind.CREATE, OperationKind.UPDATE):
                         for operation in plan.operations:
@@ -194,12 +212,14 @@ class ImportCoordinator:
                             if cancel():
                                 return RunResult(RunStatus.CANCELLED, current, tuple(receipts), unchanged=unchanged)
                             phase, active = "write", operation
+                            notify(kind.value)
                             if kind is OperationKind.CREATE:
                                 state = adapter.create_appointment(profile.destination, operation.source)
                             else:
                                 state = adapter.update_appointment(profile.destination, operation.source, operation.targets[0])
                             expected_items[state.entry_id] = state
                             receipts.append(OperationReceipt(operation, state.entry_id))
+                            notify("verified")
                             log.info("Verified %s %s", kind.value, operation.identity.key)
                             active = None
                     deletions = tuple(op for op in plan.operations if op.kind is OperationKind.DELETE)
@@ -207,6 +227,7 @@ class ImportCoordinator:
                         if cancel():
                             return RunResult(RunStatus.CANCELLED, current, tuple(receipts), unchanged=unchanged)
                         phase = "pre_delete_capture"
+                        notify("rechecking")
                         fresh, fresh_sources, fresh_zone = self._capture(profile, adapter, RunApprovals())
                         if cancel():
                             return RunResult(RunStatus.CANCELLED, fresh, tuple(receipts), unchanged=unchanged)
@@ -223,8 +244,10 @@ class ImportCoordinator:
                             if cancel():
                                 return RunResult(RunStatus.CANCELLED, fresh, tuple(receipts), unchanged=unchanged)
                             phase, active = "write", operation
+                            notify("delete")
                             state = adapter.delete_appointment(profile.destination, operation, confirmed=True)
                             receipts.append(OperationReceipt(operation, state.entry_id))
+                            notify("verified")
                             log.info("Verified delete %s", operation.identity.key)
                             active = None
                     status = RunStatus.PENDING if plan.pending_deletions else RunStatus.COMPLETED

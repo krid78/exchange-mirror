@@ -186,9 +186,9 @@ nonempty text. Category lists use the Windows regional list separator.
 **Want to remove all mirrored items**
 - Filter your calendar by the `Mirrored` category and delete them, or search for the `[Mirror]` subject prefix
 
-## Manual ICS Importer (Preview)
+## Manual ICS Importer
 
-A separate preview-only tool can inspect a public ICS source against a selected
+A separate manually started tool can synchronize a public ICS source into a selected
 Outlook calendar. Start classic Outlook, then run from the project directory:
 
 ```powershell
@@ -197,10 +197,16 @@ Outlook calendar. Start classic Outlook, then run from the project directory:
 ```
 
 Enter a profile name and HTTPS ICS URL, choose the destination calendar, set the
-date range (the Until date is exclusive), and click **Build preview**. Profiles
-can be saved for later use. The app shows proposed additions, updates, unchanged
-items, conflicts and pending removals. **This version does not change appointments
-and has no synchronization button yet.** For Exchange free/busy, prefer the
+date range (the Until date is exclusive), and click **Build preview**. Save the
+profile before synchronization so its import identity survives restarts; saving
+unchanged preview inputs preserves the reviewed preview. The app shows proposed additions, updates, unchanged
+items, conflicts and pending removals. **Build preview** does not change appointments.
+Use **Synchronize preview** to confirm and apply the reviewed changes. Missing-event
+removal requires confirming that the source export is complete for the selected
+period; an empty source and unusually large removal need additional confirmation.
+**Cancel run** stops between operations and preserves earlier saved changes.
+If the folder dialog is hidden, switch to Outlook with Alt+Tab or the taskbar.
+For Exchange free/busy, prefer the
 intended account's default calendar; an additional calendar may not affect it.
 
 See [the importer documentation](docs/ics-importer.md) for profile storage,

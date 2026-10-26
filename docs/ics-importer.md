@@ -37,9 +37,10 @@ Step 13 adds optimistic in-place updates of verified owned appointments.
 Step 14 adds confirmed single-item deletes with ownership and readback checks.
 Step 15 connects fetch, parse, preview and execution through a guarded run coordinator.
 Step 16 adds a manually started, preview-only Tk GUI.
+Step 17 adds confirmed GUI synchronization, progress, cancellation and result reporting.
 The existing Exchange Mirror behavior is unchanged.
 
-Later steps will add GUI execution/results and packaging in individually reviewable changes.
+Later steps will complete integration acceptance, packaging and delivery documentation.
 
 ## Event identity contract
 
@@ -549,7 +550,51 @@ candidates with review notes and counts. Selecting a row shows its complete revi
 note below the table; labels wrap when the window is resized. Times are shown in the named IANA profile
 zone, or explicitly UTC when a custom zone cannot be resolved locally for display.
 All-day end dates stay exclusive. Input edits invalidate the old preview. Errors
-show static actionable messages without raw URLs/query tokens. There is no GUI
-execute button and no call to `ImportCoordinator.execute` in this step; profile
-file writes are the only user-requested persistence from the window. No appointment
-is created, updated, deleted or sent by the GUI.
+show static actionable messages without raw URLs/query tokens. Preview itself makes
+no appointment changes. The current GUI also offers the separate, explicitly
+confirmed synchronization described below.
+
+## GUI synchronization and results (step 17)
+
+**Synchronize preview** is enabled only after a valid, conflict-free preview of a
+saved profile. The currently displayed settings must match the persisted profile;
+the file is checked again before execution. This prevents losing an unsaved import
+identity on restart and creating a new profile's duplicate copies. Saving unchanged
+reviewed inputs preserves the preview, so no redundant download is needed.
+Input edits invalidate it. A concrete summary lists the destination, additions,
+updates, eligible deletions and removals that remain pending before any writes.
+Declining confirmation starts no run. Empty-source and unusually large deletions
+retain separate confirmation gates. Unconfirmed coverage/scope/conflicts cannot
+be overridden by answering a deletion dialog.
+
+The checkbox **Source export is complete for the selected From/Until period**
+explicitly asserts coverage for that exclusive date range. It enables absence-based
+deletion planning, not deletion by itself. Source URL, period or timezone edits reset
+the assertion. Saving persists it; loading checks it only for confirmed coverage
+matching the displayed period. Wider/different saved coverage requires a new
+assertion for the displayed range. Cancellation-based cleanup still follows the
+existing planner rules. All actual deletion approvals remain per-run and unsaved.
+
+Execution invokes the existing coordinator on a worker thread. Tk confirmations,
+progress and reports stay on the main thread. Immutable `RunProgress` updates carry
+phase and verified-operation counts; observer failures cannot turn a saved operation
+into a retry. Controls and a busy guard prevent double-click duplicate runs. The
+table marks verified changes, failed/uncertain operations and operations not reached;
+the final report counts only verified receipts and distinguishes pending, cancelled,
+failed and complete runs. Unknown outcomes explicitly require fresh inventory.
+
+Changed source/target data renders the coordinator's fresh preview and requires a
+new user action/confirmation, never automatic continuation. Completed/failed/cancelled
+runs require a fresh preview before another run. Unexpected worker interruption
+does not claim that nothing changed. Defensive programmatic input changes during a
+run request cancellation and preserve the eventual partial-result report.
+
+**Cancel run** stops between operations. It cannot interrupt an in-flight Save and
+does not undo earlier changes. Closing during execution requests cancellation,
+waits for the current call and shows the final report before closing. Closing during
+a read still waits for completion; a native Outlook picker must be cancelled there.
+
+Starting calendar selection now shows a prominent inline notice that Outlook's
+folder dialog may be behind the importer, with **Alt+Tab / taskbar** instructions.
+The notice disappears when selection finishes. The app does not force foreground
+focus or send keyboard shortcuts to Outlook.
