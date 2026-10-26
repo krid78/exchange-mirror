@@ -292,3 +292,19 @@ class CoordinatorTests(TestCase):
         result = self.runner.execute(self.profile, self.runner.preview(self.profile))
         self.assertEqual(result.status, RunStatus.COMPLETED)
         self.assertEqual(result.counts["create"], 1)
+
+    def test_progress_reports_verified_counts_and_observer_cannot_abort_writes(self):
+        self.seed(event("a", "Old"), event("z"))
+        self.body = calendar(event("a"), event("b")).encode()
+        updates = []
+        result = self.runner.execute(self.profile, self.runner.preview(self.profile), approvals=self.approvals, progress=updates.append)
+        self.assertEqual(result.status, RunStatus.COMPLETED)
+        self.assertEqual([update.completed for update in updates if update.phase == "verified"], [1, 2, 3])
+        self.assertTrue(any(update.phase == "rechecking" and update.completed == 2 for update in updates))
+        self.body = calendar(event("a", "Another update"), event("b")).encode()
+        def broken(update):
+            raise RuntimeError("private source URL")
+        with self.assertLogs("ics_importer.run", level="WARNING") as logs:
+            result = self.runner.execute(self.profile, self.runner.preview(self.profile), progress=broken)
+        self.assertEqual(result.status, RunStatus.COMPLETED)
+        self.assertNotIn("private source URL", str(logs.output))

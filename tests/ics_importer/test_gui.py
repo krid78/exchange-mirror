@@ -114,7 +114,7 @@ class WorkerTests(TestCase):
         self.assertFalse(jobs.busy)
 
 
-class TkPreviewTests(TestCase):
+class GuiHarness:
     def setUp(self):
         self.directory = TemporaryDirectory(dir=Path(__file__).resolve().parent)
         self.addCleanup(self.directory.cleanup)
@@ -125,7 +125,7 @@ class TkPreviewTests(TestCase):
             self.skipTest(f"Tk display unavailable: {type(error).__name__}")
         self.root.withdraw()
         self.addCleanup(self._cleanup)
-        self.dialogs = SimpleNamespace(showerror=Mock(), askyesno=Mock(return_value=False))
+        self.dialogs = SimpleNamespace(showerror=Mock(), showinfo=Mock(), askyesno=Mock(return_value=False))
         self.coordinator = SimpleNamespace(preview=Mock(side_effect=preview),
                                            execute=Mock(side_effect=AssertionError("No execution in step 16")))
         self.choice = CalendarChoice(profile().destination, "Synthetic account", False)
@@ -157,11 +157,13 @@ class TkPreviewTests(TestCase):
                            ("start", "2026-01-01"), ("end", "2027-01-01")):
             self.app.values[key].set(value)
 
-    def test_startup_never_reads_outlook_or_source_and_has_no_execute_control(self):
+class TkPreviewTests(GuiHarness, TestCase):
+    def test_startup_never_reads_outlook_or_source_and_requires_preview_for_execution(self):
         self.coordinator.preview.assert_not_called()
         self.app.picker.assert_not_called()
         self.assertFalse(self.path.exists())
-        self.assertFalse(hasattr(self.app, "execute_button"))
+        self.assertEqual(str(self.app.execute_button.cget("state")), "disabled")
+        self.coordinator.execute.assert_not_called()
 
     def test_invalid_input_does_not_schedule_preview(self):
         self.app.build_preview()
@@ -173,6 +175,7 @@ class TkPreviewTests(TestCase):
         self.fill()
         self.app.picker.return_value = None
         self.app.choose_calendar()
+        self.assertIn("Alt+Tab", self.app.picker_notice.get())
         self.complete_jobs()
         self.assertEqual(self.app.destination, profile().destination)
         self.assertIn("cancelled", self.app.status.get())

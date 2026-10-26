@@ -1,5 +1,28 @@
 # ICS importer test foundation
 
+## GUI synchronization (step 17)
+
+`test_gui_run.py` covers concrete confirmation/cancellation, non-overridable coverage
+blockers, separate empty/large-removal confirmations, worker execution, double-click
+protection, refreshed-preview review without automatic continuation, verified versus
+uncertain row outcomes, cancellation/close reporting and coverage invalidation.
+Unsaved identities cannot execute; saving matching reviewed inputs preserves the
+preview, and execution verifies the persisted profile again before starting.
+Coordinator tests verify monotonic verified progress and that observer errors cannot
+abort successful writes or echo raw error data. The step-16 startup test now verifies
+that execution starts disabled and is never invoked automatically. Picker tests also
+check the visible Alt+Tab hint while the native dialog may be hidden.
+
+Authorized real GUI-worker check on 2026-10-26 used a synthetic feed and real COM in
+**Exchange Mirror Importer Test**, with explicit harness confirmations. It first
+created two items, then displayed/applied one Create, one Update and one Delete.
+The table showed each verified outcome and the report matched the receipts. The
+final repeat also verified disabled synchronization until saving, then preservation
+of the same reviewed preview. Profiles were saved only in a temporary test directory,
+which was removed afterward; real user profile storage was untouched. Cleanup removed
+the remaining two synthetic items and left the test calendar empty. Native dialogs
+and interactive usability remain for user review.
+
 ## Preview GUI (step 16)
 
 `test_gui.py` covers form defaults/validation, stable draft IDs, explicit mapping
@@ -26,8 +49,9 @@ missing folders using fake Outlook sessions. No calendar picker is opened by tes
 Manual user review: start `.venv\Scripts\python.exe ics_importer.py`, paste the
 desired public HTTPS source, choose the intended calendar, adjust the exclusive
 date window and build a preview. Check layout, keyboard/paste behavior, folder
-selection/cancellation, account/free-busy hints and preview notes. The GUI cannot
-execute changes in this step. Use `--profiles PATH` for a separate test profiles
+selection/cancellation, account/free-busy hints and preview notes. Stop after Build
+preview for read-only checks; the current GUI can also apply explicitly confirmed
+changes as described in step 17 above. Use `--profiles PATH` for a separate test profiles
 file if desired. Interactive feedback remains with the user; the automatic checks
 do not claim to replace native dialog or visual usability review.
 
