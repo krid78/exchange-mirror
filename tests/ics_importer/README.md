@@ -1,5 +1,19 @@
 # ICS importer test foundation
 
+## In-place updates (step 13)
+
+`test_outlook_update.py` verifies retained EntryID/identity, text/location/time
+updates, unchanged no-Save behavior, timed/all-day transitions, flag repairs, stale
+snapshots, duplicate identities, unsaved edits, post-inventory ownership/parent
+changes and recipient rejection. Save and readback failures must never create a
+replacement or report success. The fakes prohibit Send/Delete during update.
+
+Authorized real Outlook check on 2026-10-26 in **Exchange Mirror Importer Test**:
+one synthetic item passed in-place text/time update, unchanged repeat, stale-snapshot
+rejection, timed -> all-day -> timed transitions and Busy/reminder repair. Its
+EntryID stayed unchanged and the folder contained exactly one item throughout.
+The test item was then removed by the isolated harness; the folder is empty again.
+
 ## Single-create adapter (step 12)
 
 `test_outlook_create.py` uses fake COM writes and independently reopened records.
