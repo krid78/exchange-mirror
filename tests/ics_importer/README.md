@@ -1,5 +1,13 @@
 # ICS importer test foundation
 
+## Profiles (step 8)
+
+`test_profiles.py` uses temporary directories under the test directory and never
+touches real APPDATA. It covers roundtrip/schema, missing/corrupt/duplicate data,
+stable UUIDs on confirmed mapping changes, rejection of implicit changes and a
+simulated failed atomic replacement preserving the old file with no leftover temp.
+No concurrent-write or Outlook-folder existence guarantee is claimed yet.
+
 ## HTTP transport (step 7)
 
 `test_http.py` injects byte-stream responses; it never contacts a live host. Tests
