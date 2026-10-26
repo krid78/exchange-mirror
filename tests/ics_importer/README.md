@@ -1,5 +1,12 @@
 # ICS importer test foundation
 
+## Upsert planning (step 9)
+
+`test_sync.py` covers create-to-unchanged idempotence, field and fixed-flag repairs,
+comparison normalization, duplicate/schema conflicts, concrete destination/profile
+checks, unmanaged/foreign records, moved-out events and absence of deletes. It
+constructs normalized records directly; no COM or calendar write is simulated.
+
 ## Profiles (step 8)
 
 `test_profiles.py` uses temporary directories under the test directory and never
