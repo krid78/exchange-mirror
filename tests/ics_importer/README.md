@@ -1,5 +1,14 @@
 # ICS importer test foundation
 
+## HTTP transport (step 7)
+
+`test_http.py` injects byte-stream responses; it never contacts a live host. Tests
+cover success/metadata, no conditional headers, non-200/304/206 statuses, HTML,
+truncation, size/deadline limits, invalid/compressed responses, origin checks,
+same-origin redirects, HTTPS downgrade/cross-host rejection and safe diagnostics.
+The default transport test verifies construction of the default TLS context; real
+certificate verification belongs to the standard library, not a simulated certificate test.
+
 Run from the repository root on Windows:
 
 ```powershell
