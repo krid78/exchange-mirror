@@ -22,10 +22,11 @@ require two Outlook accounts or privacy settings.
 
 Steps 1 and 2 establish synthetic ICS examples, an offline test foundation and
 pure event/target/operation records in `ics_model.py`.
-There is no importer command, UI, network client, parser, or Outlook write path yet.
+Step 3 adds offline parsing of simple VEVENTs in `ics_source.py`.
+There is no importer command, UI, network client or Outlook write path yet.
 The existing Exchange Mirror behavior is unchanged.
 
-Later steps will introduce parsing, synchronization planning,
+Later steps will extend time/recurrence parsing and introduce synchronization planning,
 Outlook operations, user interface, and packaging in individually reviewable changes.
 
 ## Event identity contract
@@ -53,3 +54,34 @@ anything and can retain multiple matching targets as conflict evidence.
 
 These records do not parse ICS, resolve source revisions, choose actions or enforce
 the final Busy policy yet. Planning and Outlook writing remain separate later steps.
+
+## Offline parsing (step 3)
+
+Install `requirements-importer.txt` into the development environment. The importer
+uses the `icalendar` library, pinned independently of the existing application.
+`parse_ics(data, profile_id)` accepts UTF-8 bytes or text and returns a tuple of
+`SourceEvent` records. It performs no file, network or Outlook operations.
+
+The current subset supports one complete VERSION:2.0 publication calendar with
+PRODID, independent VEVENTs, required UID/DTSTAMP and DTSTART for active events.
+UTC timestamps and DATE values are accepted; floating times, TZID/VTIMEZONE,
+recurrences and multiple revisions of one UID are explicitly rejected until their
+planned steps. Consequently the timezone-bearing timetable fixture is not yet
+accepted. Folded lines and escaped text are decoded by the library.
+
+DTEND and positive DURATION are alternatives. A missing end defaults to the same
+instant for timed events or the next exclusive date for all-day events. Missing
+text/categories become empty, STATUS defaults to confirmed and SEQUENCE to zero.
+LAST-MODIFIED, otherwise DTSTAMP, supplies revision time. CANCELLED events may be
+identity-only tombstones with DTSTAMP. Source tentative status is preserved in the
+model; forcing target availability to Busy belongs to later projection/writing.
+Source alarms, attendees and organizer are not copied into the model.
+
+Malformed components/properties, duplicate mapped scalar fields, conflicting end fields,
+unsupported components and incomplete snapshots raise `IcsParseError` for the whole
+snapshot. There is no partially successful result. A valid empty calendar returns
+an empty tuple; this alone never authorizes deletion. This is a deliberately bounded
+import subset, not a general RFC validator.
+
+Library references: [usage](https://icalendar.readthedocs.io/en/stable/usage.html),
+[parse errors](https://icalendar.readthedocs.io/en/stable/how-to/parse-errors.html).

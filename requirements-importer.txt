@@ -1,0 +1,2 @@
+# Kept separate so developing the existing tray application needs no new package.
+icalendar==7.3.0
