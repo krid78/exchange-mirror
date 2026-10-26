@@ -358,6 +358,20 @@ def _check_envelope(text):
         raise IcsParseError("Incomplete VCALENDAR")
 
 
+def calendar_timezone(data, name):
+    """Resolve the planning/profile timezone from this validated snapshot.
+
+    Embedded definitions take precedence, just as in parse_ics. This is not an
+    alternative event validation API; callers must parse the entire feed first.
+    """
+    try:
+        text = data.decode("utf-8-sig") if isinstance(data, bytes) else data.removeprefix("\ufeff")
+        calendar = Calendar.from_ical(text)
+        return _resolve_zone(name, _snapshot_zones(calendar))
+    except Exception:
+        raise IcsParseError("Cannot resolve the snapshot's planning timezone") from None
+
+
 def parse_ics(data: bytes | str, profile_id: UUID, *, floating_timezone: str | None = None,
               window_start: date | None = None, window_end: date | None = None,
               max_occurrences: int = 10000, max_candidates: int = 100000) -> tuple[SourceEvent, ...]:

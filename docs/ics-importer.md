@@ -35,10 +35,11 @@ Step 11 adds the read-only classic Outlook adapter in `ics_outlook.py`.
 Step 12 adds an explicit single-appointment create and verification path.
 Step 13 adds optimistic in-place updates of verified owned appointments.
 Step 14 adds confirmed single-item deletes with ownership and readback checks.
-There is no importer command, UI or run coordinator yet.
+Step 15 connects fetch, parse, preview and execution through a guarded run coordinator.
+There is no importer command or UI yet.
 The existing Exchange Mirror behavior is unchanged.
 
-Later steps will add user interface, coordination and
+Later steps will add user interface and
 packaging in individually reviewable changes.
 
 ## Event identity contract
@@ -316,7 +317,9 @@ the same safety conditions; those adapter/coordinator steps are not implemented 
 pywin32, initializes COM on the caller's thread and releases it on exit. It neither
 starts the tray application nor loads Mirror configuration. No account-count check
 is made: one Outlook account is sufficient. The context yields an `OutlookReader`
-which must remain on that thread and cannot be used after closing. The Windows
+which must remain on that thread and cannot be used after closing. Nested sessions
+on the same thread are rejected before COM initialization; pass plain destination
+IDs between separate sessions, not retained COM folder/item references. The Windows
 category separator is read from HKCU and parsed with the existing pure
 `sync_policy.parse_categories` helper. pywin32 is an importer dependency on Windows;
 the module's fake-adapter tests do not require a real COM server.
@@ -452,3 +455,62 @@ Deletion uses normal Outlook behavior (typically moving to Deleted Items); it do
 not purge Deleted Items or promise permanent/server-wide erasure. The method performs
 no Send operation. Run-level sequencing, source freshness and cross-process locking
 remain step 15 concerns; these optimistic checks are not a transaction with other clients.
+
+## Manual run coordinator (step 15)
+
+`ImportCoordinator` in `ics_run.py` provides the complete core flow for a future
+GUI/CLI. `preview(profile)` locks the profile/destination, opens a read-only Outlook
+session, downloads and fully parses the source, resolves its planning timezone and
+reads the whole target inventory. It returns an immutable `ImportPreview` containing
+plain records, source-byte digest and the unconfirmed plan. This dry-run invokes no
+appointment mutations. Lock files are its only filesystem output; profiles are not
+silently rewritten. `PreviewError` reports failure without exposing raw source/URL data.
+
+`execute(profile, preview, approvals=RunApprovals(...))` takes the current profile
+from the caller and acquires the same lock. It opens its own write-enabled COM
+session and fetches/parses/reads again. Changed profile, resolved source content,
+target state or proposed plan returns `REVIEW_REQUIRED` with a fresh preview before
+any writes. Collection enumeration order does not matter. Raw-byte digests are
+retained for traceability; changed DTSTAMP/SEQUENCE alone does not invalidate review
+if revision resolution yields identical event identities, content, status and plan.
+The profile timezone is resolved from each actual snapshot, including custom
+VTIMEZONE definitions and BOM-bearing source data.
+
+Conflicts block all operations. Otherwise all Create operations precede Update,
+and all verified upserts precede Delete. Deletion approvals are explicit booleans
+for the exact preview, empty snapshot and large removal; they are never persisted.
+Unapproved/unsupported deletion candidates stay pending while safe upserts may
+complete. Before any approved deletion, source and inventory are read again and
+compared with the expected baseline including this run's verified upserts. New
+changes, new upserts/conflicts or changed deletion decisions require fresh review;
+old approval is never extended automatically to additional deletions.
+
+Any write failure stops immediately, so a failed Create/Update cannot be followed
+by deletion. There is no automatic retry or rollback of verified earlier operations.
+`RunResult` carries status, verified per-operation receipts, counts, unchanged count
+and a structured failure (phase, operation kind, identity hash and uncertain-outcome
+flag). Counts describe verified completed operations, not a claim of an atomic
+transaction or an exact count of underlying COM Save calls. Completion with pending
+deletions is distinct from full completion; review/cancellation/failure after some
+upserts preserves their receipts. A returned execution plan is a report, not a
+reusable grant to skip a new preview. Logs use kinds/hashes and safe error types,
+not subjects, raw errors or source query strings.
+
+The optional `cancel_requested` callback is checked between stages and operations;
+it does not interrupt an in-flight download/COM call or claim that a Save rolled
+back. A new run always reads Outlook markers again. Thus a Save which persisted
+before interruption can become Unchanged on restart without local checkpoint files.
+
+`ics_lock.target_lock` uses nonblocking OS locks keyed by profile UUID plus concrete
+store/folder IDs. Default files live beside profiles under `ics-importer/locks`;
+tests can supply an explicit directory. All cooperating processes must use the
+same directory. Windows locks the first byte (including beyond EOF); Unix uses
+flock. Another owner causes `RunBusyError`/BUSY without waiting or starting COM.
+Handles release on normal or abnormal process exit; empty files deliberately remain
+to avoid unlink/recreate races. The lock does not coordinate other Windows users,
+other tools or remote Outlook/Exchange clients and cannot provide a server transaction.
+
+The coordinator retains no COM objects between preview and execution. Session,
+transport and parser seams support offline harnesses; production defaults use the
+existing HTTPS parser and guarded Outlook adapter. Preview and execute must run
+outside any already-open `outlook_session` on the same thread.

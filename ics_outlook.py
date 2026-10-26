@@ -18,6 +18,7 @@ MARKER_IDENTITY = "IcsImportIdentity"
 MARKER_KEY = "IcsImportEventKey"
 MARKER_SCHEMA = "IcsImportSchemaVersion"
 MARKERS = (MARKER_PROFILE, MARKER_IDENTITY, MARKER_KEY, MARKER_SCHEMA)
+_SESSION_STATE = threading.local()
 
 
 class OutlookReadError(RuntimeError):
@@ -393,6 +394,8 @@ def outlook_session(*, write=False):
     """Attach to running classic Outlook on this thread, release COM on exit."""
     if type(write) is not bool:
         raise ValueError("write must be a boolean")
+    if getattr(_SESSION_STATE, "active", False):
+        raise OutlookReadError("Close the current Outlook session before opening another on this thread")
     try:
         import pythoncom
         import win32com.client
@@ -401,6 +404,7 @@ def outlook_session(*, write=False):
     initialized = False
     reader = None
     application = namespace = None
+    _SESSION_STATE.active = True
     try:
         pythoncom.CoInitialize()
         initialized = True
@@ -411,14 +415,24 @@ def outlook_session(*, write=False):
             separator, _ = winreg.QueryValueEx(key, "sList")
         reader_class = OutlookWriter if write else OutlookReader
         reader = reader_class(namespace, category_separator=separator)
-    except Exception:
+    except BaseException as error:
         namespace = application = None
-        if initialized:
-            pythoncom.CoUninitialize()
+        try:
+            if initialized:
+                pythoncom.CoUninitialize()
+        finally:
+            _SESSION_STATE.active = False
+        if not isinstance(error, Exception):
+            raise
         raise OutlookReadError("Cannot attach to running classic Outlook in this Windows session") from None
     try:
         yield reader
     finally:
-        reader.close()
-        reader = namespace = application = None
-        pythoncom.CoUninitialize()
+        try:
+            reader.close()
+        finally:
+            reader = namespace = application = None
+            try:
+                pythoncom.CoUninitialize()
+            finally:
+                _SESSION_STATE.active = False
