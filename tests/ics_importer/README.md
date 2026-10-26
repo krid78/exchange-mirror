@@ -1,5 +1,12 @@
 # ICS importer test foundation
 
+## Standalone build (step 19)
+
+See [BUILD.md](BUILD.md) for the portable executable smoke test, exact environment
+and remaining clean-machine validation. `test_runtime.py` checks offline runtime
+diagnostics, preservation of existing user profiles, temporary-file cleanup and
+static failure reports. It forbids Outlook attachment and coordinator preview/run.
+
 `test_outlook_cache.py` covers change-key reuse, changed/new/deleted records,
 corrupt-marker detection after edits, table short/long EntryID comparison,
 stable-snapshot retries and bounded failure under continuous changes, item limits,
