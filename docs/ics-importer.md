@@ -567,13 +567,20 @@ Declining confirmation starts no run. Empty-source and unusually large deletions
 retain separate confirmation gates. Unconfirmed coverage/scope/conflicts cannot
 be overridden by answering a deletion dialog.
 
-The checkbox **Source export is complete for the selected From/Until period**
+The checkbox **Source includes all events in this period — allow removal of missing imports**
 explicitly asserts coverage for that exclusive date range. It enables absence-based
 deletion planning, not deletion by itself. Source URL, period or timezone edits reset
 the assertion. Saving persists it; loading checks it only for confirmed coverage
 matching the displayed period. Wider/different saved coverage requires a new
 assertion for the displayed range. Cancellation-based cleanup still follows the
 existing planner rules. All actual deletion approvals remain per-run and unsaved.
+
+Leave this unchecked when the source's coverage is unknown or is a rolling window.
+New and changed appointments still synchronize. This is a statement about the
+feed's completeness, not whether downloading or importing has finished. For example,
+a complete semester export can support this assertion for its semester date range.
+**About removals…** explains this distinction beside the checkbox without changing
+the setting or granting deletion permission.
 
 Execution invokes the existing coordinator on a worker thread. Tk confirmations,
 progress and reports stay on the main thread. Immutable `RunProgress` updates carry
@@ -598,3 +605,17 @@ Starting calendar selection now shows a prominent inline notice that Outlook's
 folder dialog may be behind the importer, with **Alt+Tab / taskbar** instructions.
 The notice disappears when selection finishes. The app does not force foreground
 focus or send keyboard shortcuts to Outlook.
+
+## Acceptance scope (step 18)
+
+The isolated Outlook acceptance run verified interrupted-process recovery,
+idempotency, stable update identities, explicit cancellation and coverage-based
+removal, persisted Busy=2, and direct Mirror create/update/delete interoperability.
+The user reported successful GUI testing on 2026-10-26. Reproduction instructions
+and exact evidence limits are in [the acceptance protocol](../tests/ics_importer/ACCEPTANCE.md).
+
+Exchange server free/busy publication and the scheduling assistant's view of the
+target account remain **unverified**. Persisted Busy=2 in an additional calendar
+does not prove account availability publication. Restart recovery was verified with
+a new importer process, not by restarting the user's running Outlook. Full parallel
+account-to-account Mirror synchronization also remains outside this isolated test.

@@ -307,8 +307,10 @@ class ImporterWindow:
         self.progress.pack(side="left", padx=14)
         self.summary_label = ttk.Label(actions, textvariable=self.summary, wraplength=600)
         self.summary_label.pack(side="left")
-        self.coverage_check = ttk.Checkbutton(dates, text="Source export is complete for the selected From/Until period (allows missing-event removal)", variable=self.complete_export)
-        self.coverage_check.grid(row=1, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        self.coverage_check = ttk.Checkbutton(dates, text="Source includes all events in this period — allow removal of missing imports", variable=self.complete_export)
+        self.coverage_check.grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0))
+        self.coverage_help = ttk.Button(dates, text="About removals…", command=self.explain_coverage)
+        self.coverage_help.grid(row=1, column=5, sticky="w", pady=(8, 0))
         table = ttk.Frame(frame)
         table.grid(row=9, column=0, columnspan=3, sticky="nsew")
         table.rowconfigure(0, weight=1)
@@ -348,6 +350,15 @@ class ImporterWindow:
             self.selection_note.set(f"{values[0]} — {values[1]}\n{values[4]}")
         else:
             self.selection_note.set("Select a row to see its full review note.")
+
+    def explain_coverage(self):
+        self.dialogs.showinfo("When may missing imports be removed?",
+            "Enable this only when the feed includes every appointment in the selected From/Until period. "
+            "Then a previously imported appointment missing from the feed may be proposed for deletion. "
+            "Deletions still require confirmation.\n\n"
+            "For example: a full semester export with a matching date range. "
+            "For a rolling or unknown export range, leave this off. New and changed appointments still synchronize.\n\n"
+            "This describes the source's coverage. Explicit cancellations in the source are reviewed separately.", parent=self.root)
 
     def _populate(self, profile):
         self._loading = True
@@ -442,6 +453,7 @@ class ImporterWindow:
             button.configure(state="disabled" if busy else "normal")
         self.save_button.configure(state="disabled" if busy or self._profile_load_error else "normal")
         self.coverage_check.configure(state="disabled" if busy else "normal")
+        self.coverage_help.configure(state="disabled" if busy else "normal")
         saved = self.last_preview is not None and self.last_preview.profile in self.profiles
         self.execute_button.configure(state="normal" if not busy and saved and not self.last_preview.plan.has_conflicts else "disabled")
         self.cancel_button.configure(state="normal" if busy and self._executing else "disabled")
