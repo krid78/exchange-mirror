@@ -111,8 +111,8 @@ class RecurrenceTests(unittest.TestCase):
             with self.subTest(rule=rule), self.assertRaises(IcsParseError):
                 self.parse(EVENT + "\r\nRRULE:" + rule)
 
-    def test_exceptions_periods_and_multiple_masters_remain_rejected(self):
-        for prop in ("RECURRENCE-ID:20261027T130000Z", "EXRULE:FREQ=DAILY",
+    def test_unsupported_ranges_periods_and_conflicting_masters_are_rejected(self):
+        for prop in ("RECURRENCE-ID;RANGE=THISANDFUTURE:20261027T130000Z", "EXRULE:FREQ=DAILY",
                      "RDATE;VALUE=PERIOD:20261028T130000Z/PT1H"):
             with self.subTest(prop=prop), self.assertRaises(IcsParseError):
                 self.parse(EVENT + "\r\n" + prop)

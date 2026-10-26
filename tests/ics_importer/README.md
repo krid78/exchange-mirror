@@ -30,11 +30,11 @@ These are model contracts only; parser behavior is covered separately below.
 `test_source.py` checks minimal and multiple events, UTF-8/folding/escapes,
 categories and optional defaults, DTEND/DURATION, exclusive DATE ends, revisions,
 tentative status and cancellation tombstones. Invalid or duplicate scalar fields,
-bad times, partial snapshots, HTML, unexpected components and duplicate identities
+bad times, partial snapshots, HTML, unexpected components and conflicting revisions
 must fail the entire parse instead of returning a partial event list.
 
 UTC/date parsing is supported; unconfigured floating timestamps, recurrence
-without an explicit window, and unsupported exception properties fail explicitly.
+without an explicit window, and unsupported RANGE/EXRULE properties fail explicitly.
 Source alarms and attendees are not copied. LF/CRLF and UTF-8 BOM inputs are covered.
 These tests do not prove HTTP or planning
 or Outlook behavior; those belong to later steps.
@@ -63,8 +63,22 @@ UTC day. Output identities retain the original occurrence slot.
 
 Failure cases cover missing/invalid windows, work/output limits, old dense rules,
 invalid RRULE termination, unsupported extensions, date/time mismatches, periods,
-exception components and duplicate masters. No failed expansion is allowed to return
+unsupported ranges and conflicting masters. No failed expansion is allowed to return
 a partial success. Singleton behavior remains unchanged. Tests are entirely offline.
+
+## Exceptions, cancellations and revisions (step 6)
+
+`test_exceptions.py` verifies moved occurrences under their original keys, replacement
+outside/inside the date window, occurrence tombstones, UID-wide cancellation and
+standalone detached records. It checks all-day/type consistency and rejects RANGE,
+duplicate RECURRENCE-ID and recurrence rules on detached exceptions.
+
+Revision tests cover SEQUENCE before timestamps, LAST-MODIFIED/DTSTAMP ordering,
+identical duplicate collapse, conflicting highest-ranked records, superseded conflicts
+and independent master/exception ranks. Cancellation tests verify that an entire
+cancelled series is not expanded into active imports and that contradictory newer
+exceptions fail. These tests cover returned source records only; no deletion or
+Outlook mutation is executed.
 
 ## Fixtures
 

@@ -139,9 +139,10 @@ class SourceTests(unittest.TestCase):
         with self.assertRaises(IcsParseError):
             parse_ics(b"\xff", PROFILE)
 
-    def test_duplicate_identity_is_not_silently_resolved(self):
-        with self.assertRaises(IcsParseError):
-            parse_ics(calendar(EVENT, EVENT + "\r\nSEQUENCE:1"), PROFILE)
+    def test_duplicate_identity_selects_newer_revision(self):
+        events = parse_ics(calendar(EVENT, EVENT + "\r\nSEQUENCE:1"), PROFILE)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].sequence, 1)
 
     def test_source_alarm_and_attendees_are_not_copied(self):
         source = EVENT + ("\r\nATTENDEE:mailto:synthetic@example.invalid"
