@@ -27,7 +27,8 @@ Step 4 adds snapshot-local TZID/VTIMEZONE resolution, explicit floating-time zon
 and daylight-saving-aware duration handling.
 Step 5 expands regular event recurrence sets in an explicit finite date window.
 Step 6 resolves source revisions and overlays detached exceptions and cancellations.
-There is no importer command, UI, network client or Outlook write path yet.
+Step 7 adds a bounded HTTPS download API in `ics_http.py`.
+There is no importer command, UI or Outlook write path yet.
 The existing Exchange Mirror behavior is unchanged.
 
 Later steps will extend time/recurrence parsing and introduce synchronization planning,
@@ -194,3 +195,23 @@ part of the cancelled series. A newer active master revision can supersede cance
 Only publication snapshots are accepted; this does not add an iTIP METHOD:CANCEL
 message processor. Deletion planning, Outlook changes and cross-run revision history
 remain later concerns. Revisions are resolved within the supplied snapshot only.
+
+## HTTPS downloads (step 7)
+
+`fetch_ics(url)` returns an immutable `FeedSnapshot`: raw bytes, source host, UTC
+fetch time, SHA-256 digest and optional ETag/Last-Modified metadata. It validates
+one complete UTF-8 VCALENDAR envelope; callers must still parse every event before
+using the snapshot for planning. No conditional requests or cache reuse are enabled.
+
+Only HTTPS URLs without embedded credentials, fragments or whitespace are allowed.
+TLS uses the system's verifying default context. Redirects must stay on the same
+HTTPS host and port; the standard redirect handler limits loops. Cross-host redirects
+require a future explicit policy change, never an implicit permission grant.
+
+Default limits are 30 seconds and 5 MB. Socket operations use the timeout and elapsed
+time is checked after each read; this is not a hard process-level deadline. Oversized,
+compressed, truncated, HTML, malformed-envelope and non-200 responses (including 304)
+fail with `FeedDownloadError`; they never become an empty successful snapshot.
+text/calendar, text/plain and application/octet-stream are accepted only with a valid
+calendar envelope. Diagnostics exclude URLs, query tokens and raw transport errors.
+The optional opener injection is a trusted testing seam, not an alternate security policy.
