@@ -113,18 +113,15 @@ class SourceTests(unittest.TestCase):
             with self.subTest(source=source), self.assertRaises(IcsParseError):
                 parse_ics(calendar(EVENT.replace("UID:synthetic", "UID:valid"), source), PROFILE)
 
-    def test_recurrence_and_timezone_support_is_explicitly_deferred(self):
+    def test_recurrence_and_unconfigured_floating_time_are_rejected(self):
         for prop in ("RRULE:FREQ=DAILY", "RDATE:20261028T130000Z",
                      "EXDATE:20261028T130000Z", "RECURRENCE-ID:20261027T130000Z",
                      "EXRULE:FREQ=DAILY"):
             with self.subTest(prop=prop), self.assertRaises(IcsParseError):
                 parse_ics(calendar(EVENT + "\r\n" + prop), PROFILE)
-        for start in ("DTSTART:20261027T130000",
-                      "DTSTART;TZID=Europe/Berlin:20261027T130000"):
+        for start in ("DTSTART:20261027T130000",):
             with self.subTest(start=start), self.assertRaises(IcsParseError):
                 parse_ics(calendar(EVENT.replace("DTSTART:20261027T130000Z", start)), PROFILE)
-        with self.assertRaises(IcsParseError):
-            parse_ics((FIXTURES / "timetable.ics").read_bytes(), PROFILE)
 
     def test_invalid_envelopes_and_other_components(self):
         good = calendar(EVENT)

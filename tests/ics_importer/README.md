@@ -33,11 +33,24 @@ tentative status and cancellation tombstones. Invalid or duplicate scalar fields
 bad times, partial snapshots, HTML, unexpected components and duplicate identities
 must fail the entire parse instead of returning a partial event list.
 
-UTC/date parsing is supported; floating/TZID timestamps, the timezone-bearing
-timetable fixture and recurrence properties must currently fail explicitly.
+UTC/date parsing is supported; unconfigured floating timestamps and event
+recurrence properties must fail explicitly.
 Source alarms and attendees are not copied. LF/CRLF and UTF-8 BOM inputs are covered.
-These tests do not prove HTTP, time-zone conversion, recurrence expansion, planning
+These tests do not prove HTTP, recurrence expansion, planning
 or Outlook behavior; those belong to later steps.
+
+## Timezones and all-day events (step 4)
+
+`test_timezones.py` covers IANA summer/winter offsets, the embedded Europe/Berlin
+definition in the timetable fixture, custom VTIMEZONE precedence, isolation between
+successive snapshots, explicitly configured floating timestamps and unknown zones.
+It checks elapsed time across DST, P1D versus PT24H, exclusive all-day ends and
+invalid DATE/TZID combinations. Nonexistent/ambiguous local timestamps and broken
+or duplicate zone definitions must fail instead of silently choosing an offset.
+
+These tests use installed `tzdata` and synthetic calendar data only. No machine
+timezone setting, network request or Outlook calendar is modified. The timetable
+fixture is now accepted; VEVENT recurrence expansion remains out of scope.
 
 ## Fixtures
 
