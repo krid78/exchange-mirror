@@ -30,11 +30,12 @@ Step 6 resolves source revisions and overlays detached exceptions and cancellati
 Step 7 adds a bounded HTTPS download API in `ics_http.py`.
 Step 8 adds validated JSON profiles and explicit source/destination changes.
 Step 9 adds pure target projection and create/update/unchanged/conflict planning.
+Step 10 adds coverage-aware deletion candidates and explicit confirmation gates.
 There is no importer command, UI or Outlook write path yet.
 The existing Exchange Mirror behavior is unchanged.
 
-Later steps will extend time/recurrence parsing and introduce synchronization planning,
-Outlook operations, user interface, and packaging in individually reviewable changes.
+Later steps will connect real Outlook inventories and operations, user interface,
+coordination and packaging in individually reviewable changes.
 
 ## Event identity contract
 
@@ -59,8 +60,8 @@ flags, including non-busy availability that a later planner must repair.
 `SyncOperation` describes create/update/delete/unchanged/conflict without executing
 anything and can retain multiple matching targets as conflict evidence.
 
-These records do not parse ICS, resolve source revisions, choose actions or enforce
-the final Busy policy yet. Planning and Outlook writing remain separate later steps.
+These records themselves do not parse ICS, resolve revisions or execute actions.
+The separate planner enforces the Busy projection; Outlook writing remains a later step.
 
 ## Offline parsing (step 3)
 
@@ -195,8 +196,8 @@ without an active newer master is contradictory and fails rather than resurrecti
 part of the cancelled series. A newer active master revision can supersede cancellation.
 
 Only publication snapshots are accepted; this does not add an iTIP METHOD:CANCEL
-message processor. Deletion planning, Outlook changes and cross-run revision history
-remain later concerns. Revisions are resolved within the supplied snapshot only.
+message processor. Outlook changes and cross-run revision history remain later
+concerns. Revisions are resolved within the supplied snapshot only.
 
 ## HTTPS downloads (step 7)
 
@@ -262,3 +263,45 @@ custom embedded timezone. Duplicate source/target identities or unsupported mark
 schemas produce conflicts instead of another copy. Foreign-profile and unmanaged
 items remain untouched. Cancelled or absent source records never cause deletion in
 this API; step 10 supplies a separate deletion-aware planner. Plans perform no writes.
+
+## Deletion planning and export authority (step 10)
+
+`plan_sync(..., snapshot_complete=True)` adds deletion planning. The caller must
+establish successful complete download and parsing before asserting completeness;
+failed or partial snapshots must never be represented as an empty event list.
+The function rejects a missing/false completeness assertion. No planner executes
+Outlook operations, and a plan with any conflict must not be executed by later code.
+
+Profiles can persist `ExportCoverage(start, end, confirmed)` as `source_coverage`.
+Dates are exclusive at the upper bound. Missing/unconfirmed coverage grants no
+absence-based deletion authority. Old v1 profile files without this optional field
+load with no coverage. Updating a source URL clears coverage even for a token renewal,
+so the caller must explicitly reconfirm export scope rather than silently transfer
+deletion authority to a possibly different feed. Destination changes do not migrate items.
+
+Absence candidates must be marked with this profile and known schema 1 in the exact
+destination. Both the original recurrence slot (if any) and the target's actual start
+must lie inside the current profile window and confirmed export coverage. This
+protects historical items, narrowed windows and moved occurrences omitted by a partial
+expansion. A source identity still present always prevents absence cleanup, even if
+its new start moves outside the window. Unmarked and foreign-profile items are ignored.
+
+Explicit occurrence/UID cancellations need no inference from absence and therefore
+do not require export coverage, but remain limited to owned targets with original
+slot or actual start in the synchronization window. Duplicate identities, unsupported
+marker schemas or contradictory active/cancelled source data block all deletion
+operations until resolved; unknown items are never silently treated as safe to remove.
+
+By default every candidate stays in `SyncPlan.pending_deletions`, with a reason and
+blocking conditions, rather than becoming a DELETE operation. `confirm_deletions=True`
+represents acceptance of the exact preview. An empty snapshot additionally requires
+`confirm_empty_snapshot=True`. Removing more than half of the owned in-scope items
+requires `confirm_large_removal=True`; `maximum_removal_fraction` can configure this
+threshold. These grants are per-call and not persisted. Confirmations cannot bypass
+unknown coverage, scope or conflicts. `requires_confirmation` signals pending candidates;
+the caller must inspect their blockers since some require corrected data/coverage.
+
+Only confirmed, unblocked candidates enter `operations` as DELETE. No candidate is
+selected by title, category or account display name, and nothing deletes from another
+folder or profile. Future execution must revalidate ownership and freshness and honor
+the same safety conditions; those adapter/coordinator steps are not implemented here.

@@ -32,6 +32,18 @@ class Destination:
 
 
 @dataclass(frozen=True)
+class ExportCoverage:
+    start: date
+    end: date
+    confirmed: bool = False
+
+    def __post_init__(self):
+        if (type(self.start) is not date or type(self.end) is not date
+                or self.end <= self.start or type(self.confirmed) is not bool):
+            raise ProfileError("Invalid export coverage")
+
+
+@dataclass(frozen=True)
 class ImportProfile:
     profile_id: UUID
     name: str
@@ -40,6 +52,7 @@ class ImportProfile:
     floating_timezone: str
     window_start: date
     window_end: date
+    source_coverage: ExportCoverage | None = None
 
     def __post_init__(self):
         if not isinstance(self.profile_id, UUID) or not isinstance(self.destination, Destination):
@@ -47,6 +60,8 @@ class ImportProfile:
         _text(self.name)
         _text(self.floating_timezone)
         validate_feed_url(self.source_url)
+        if self.source_coverage is not None and not isinstance(self.source_coverage, ExportCoverage):
+            raise ProfileError("Invalid source coverage")
         if (type(self.window_start) is not date or type(self.window_end) is not date
                 or self.window_end <= self.window_start):
             raise ProfileError("Profile window must contain increasing dates")
@@ -60,7 +75,9 @@ def update_profile(profile, *, source_url=None, destination=None,
     if destination is not None and destination != profile.destination and confirm_destination_change is not True:
         raise ProfileError("Destination change requires explicit confirmation")
     return replace(profile, source_url=profile.source_url if source_url is None else source_url,
-                   destination=profile.destination if destination is None else destination)
+                   destination=profile.destination if destination is None else destination,
+                   source_coverage=None if source_url is not None and source_url != profile.source_url
+                   else profile.source_coverage)
 
 
 def default_profiles_path():
@@ -113,13 +130,21 @@ def load_profiles(path=None):
             raise ProfileError("Unsupported profiles document")
         profiles = []
         for record in document["profiles"]:
-            if not isinstance(record, dict) or set(record) != set(ImportProfile.__dataclass_fields__):
+            fields = set(ImportProfile.__dataclass_fields__)
+            if (not isinstance(record, dict) or not fields - {"source_coverage"} <= set(record)
+                    or not set(record) <= fields):
                 raise ProfileError("Invalid profile fields")
             values = dict(record)
             values["profile_id"] = UUID(values["profile_id"])
             values["destination"] = Destination(**values["destination"])
             values["window_start"] = _iso_date(values["window_start"])
             values["window_end"] = _iso_date(values["window_end"])
+            coverage = values.get("source_coverage")
+            if coverage is not None:
+                if not isinstance(coverage, dict) or set(coverage) != {"start", "end", "confirmed"}:
+                    raise ProfileError("Invalid source coverage fields")
+                values["source_coverage"] = ExportCoverage(_iso_date(coverage["start"]),
+                                                           _iso_date(coverage["end"]), coverage["confirmed"])
             profiles.append(ImportProfile(**values))
         return _validate_profiles(profiles)
     except ProfileError:
@@ -136,6 +161,9 @@ def save_profiles(profiles, path=None):
         record = asdict(profile)
         record.update(profile_id=str(profile.profile_id), window_start=profile.window_start.isoformat(),
                       window_end=profile.window_end.isoformat())
+        if profile.source_coverage is not None:
+            record["source_coverage"].update(start=profile.source_coverage.start.isoformat(),
+                                              end=profile.source_coverage.end.isoformat())
         records.append(record)
     payload = json.dumps({"version": 1, "profiles": records}, ensure_ascii=True, indent=2).encode("utf-8")
     if len(payload) > 1_000_000:
