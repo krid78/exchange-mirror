@@ -650,3 +650,32 @@ target account remain **unverified**. Persisted Busy=2 in an additional calendar
 does not prove account availability publication. Restart recovery was verified with
 a new importer process, not by restarting the user's running Outlook. Full parallel
 account-to-account Mirror synchronization also remains outside this isolated test.
+
+## Standalone distribution (step 19)
+
+`build-importer.bat` invokes PyInstaller from the project's `.venv`, producing a
+windowed, one-directory distribution in `dist/ics-importer`. Build dependencies
+are separate in `requirements-importer-build.txt`. Install them explicitly before
+building; the script fails on a missing environment/dependency or failed build.
+It resolves inputs relative to its own directory, so invoking it from another
+working directory is supported. Output and generated spec files stay under the
+ignored `dist/` and `build/` directories.
+
+The bundle includes the Python runtime, Tk/Tcl, pywin32, parser dependencies and
+tzdata's zone database. `icalendar` metadata and timezone provider modules are
+collected explicitly. Distribute the complete folder; the EXE alone is insufficient.
+Neither administrator rights nor a Python installation is needed to run the bundle.
+The importer still uses the existing per-user profile path and starts idle.
+
+`--check-runtime REPORT.json` runs an opt-in offline diagnostic, then exits with
+code 0/1 and a JSON report. It imports the COM dependencies without attaching to
+Outlook, checks Europe/Berlin summer/winter rules and a synthetic timezone-aware
+ICS, roundtrips a temporary profile, and initializes a withdrawn idle GUI. It does
+not load real user profiles, fetch a source, build a preview or synchronize. Only
+the requested report persists. A failure report contains the stage and exception
+type, excluding raw error descriptions and calendar data. The report also indicates
+whether the executable is frozen and whether the current process is elevated.
+
+The current branch has no integrated installer changes; this step adds no installer
+entry, shortcut or autostart behavior. The existing `build.bat` and `installer.iss`
+retain their scope. Packaging into an installer remains a separate integration step.

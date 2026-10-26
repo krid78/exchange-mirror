@@ -214,6 +214,36 @@ preview behavior and the current implementation scope.
 
 ## Building from Source
 
+### Standalone ICS importer
+
+Build as a normal Windows user from the project directory (no Inno Setup required):
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-importer-build.txt
+.\build-importer.bat
+```
+
+If `.venv` already exists, reuse it. The build script uses that environment and
+does not download packages. Output: `dist\ics-importer\ics-importer.exe`.
+Distribute the **entire `dist\ics-importer` folder**, including `_internal`.
+The recipient does not need Python installed. Start `ics-importer.exe` manually;
+it opens the importer without starting a preview or synchronization. Classic
+Outlook must be running before selecting a calendar or synchronizing.
+
+For offline runtime diagnostics, including the parser, bundled timezone rules,
+temporary profile persistence and idle GUI initialization:
+
+```powershell
+.\dist\ics-importer\ics-importer.exe --check-runtime .\runtime-report.json
+```
+
+This writes a JSON report and exits; it does not connect to Outlook or the network
+and does not load or change the user's profiles. Exit code 0 means the check
+passed. The existing Mirror build and installer are independent of this artifact.
+
+### Existing Mirror installer
+
 Requires Python 3.10+, and [Inno Setup 6](https://jrsoftware.org/isinfo.php) for the installer.
 
 **One-time setup** (run in an Administrator command prompt):
