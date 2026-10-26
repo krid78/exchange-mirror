@@ -1,5 +1,12 @@
 # ICS importer test foundation
 
+## End-to-end acceptance (step 18)
+
+See [ACCEPTANCE.md](ACCEPTANCE.md) for the opt-in real Outlook test, observed
+results, scoped cleanup/recovery and explicitly open Exchange free/busy checks.
+`outlook_acceptance.py` is excluded from automatic discovery. `test_gui_run.py`
+also checks that coverage help explains absence deletion without granting it.
+
 ## GUI synchronization (step 17)
 
 `test_gui_run.py` covers concrete confirmation/cancellation, non-overridable coverage

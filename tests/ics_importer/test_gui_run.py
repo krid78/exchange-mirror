@@ -47,6 +47,18 @@ class ConfirmationTests(TestCase):
 
 
 class GuiRunTests(GuiHarness, TestCase):
+    def test_coverage_help_explains_missing_imports_without_granting_permission(self):
+        self.app.complete_export.set(False)
+        self.app.explain_coverage()
+        title, message = self.dialogs.showinfo.call_args.args
+        self.assertIn("missing imports", title)
+        self.assertIn("every appointment", message)
+        self.assertIn("New and changed appointments still synchronize", message)
+        self.assertIn("still require confirmation", message)
+        self.assertFalse(self.app.complete_export.get())
+        self.coordinator.execute.assert_not_called()
+        self.coordinator.preview.assert_not_called()
+
     def prepare(self):
         self.fill()
         self.app.save_profile()
