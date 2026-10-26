@@ -70,12 +70,14 @@ def project_event(source):
     return DesiredState(source.fields)
 
 
-def _matches(desired, target):
+def target_matches(desired, target):
+    def body(value):
+        return value.replace("\r\n", "\n").replace("\r", "\n").rstrip()
     def categories(fields):
         return {value.strip().casefold() for value in fields.categories if value.strip()}
     left, right = desired.fields, target.fields
     return (left.start == right.start and left.end == right.end and left.subject == right.subject
-            and left.body.rstrip() == right.body.rstrip() and left.location == right.location
+            and body(left.body) == body(right.body) and left.location == right.location
             and categories(left) == categories(right)
             and desired.busy_status == target.busy_status
             and desired.reminder_set == target.reminder_set
@@ -130,7 +132,7 @@ def plan_upserts(profile, sources, inventory, *, window_timezone=None):
             continue
         desired = project_event(source)
         kind = (OperationKind.CREATE if not targets else
-                OperationKind.UNCHANGED if _matches(desired, targets[0]) else OperationKind.UPDATE)
+                OperationKind.UNCHANGED if target_matches(desired, targets[0]) else OperationKind.UPDATE)
         operations.append(SyncOperation(kind, identity, source, targets,
                                         reason="Source projection differs" if kind is OperationKind.UPDATE else "Source present"))
     return SyncPlan(tuple(operations))

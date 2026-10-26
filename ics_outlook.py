@@ -1,14 +1,14 @@
-"""Read-only classic Outlook adapter. No mirror initialization or item writes."""
+"""Classic Outlook inventory and explicit single-create adapter; no mirror setup."""
 
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 import json
 import threading
 from uuid import UUID
 
 from ics_model import EventFields, EventIdentity, TargetState
 from ics_profiles import Destination
-from ics_sync import TargetInventory, UnmanagedItem
+from ics_sync import TargetInventory, UnmanagedItem, project_event, target_matches
 from sync_policy import parse_categories
 
 
@@ -21,6 +21,19 @@ MARKERS = (MARKER_PROFILE, MARKER_IDENTITY, MARKER_KEY, MARKER_SCHEMA)
 
 class OutlookReadError(RuntimeError):
     """No usable complete inventory was obtained; no raw calendar data in errors."""
+
+
+class OutlookCreateError(RuntimeError):
+    """A create may have persisted: re-inventory before any retry, never assume rollback."""
+
+    def __init__(self, *, save_attempted, entry_id=None):
+        super().__init__("Appointment creation or verification failed; re-read inventory before retrying")
+        self.save_attempted = save_attempted
+        self.entry_id = entry_id
+
+
+class OutlookCreateConflict(RuntimeError):
+    """An existing identity prevents creation; no writes were attempted."""
 
 
 def _decode_identity(serialized):
@@ -174,9 +187,96 @@ class OutlookReader:
             raise OutlookReadError("Cannot read a complete Outlook calendar inventory") from None
 
 
+class OutlookWriter(OutlookReader):
+    """Explicit create only. Updates, deletion and run-level locking are later steps."""
+
+    def create_appointment(self, destination, source):
+        desired = project_event(source)
+        fields = desired.fields
+        for value in (fields.subject, fields.body, fields.location, *fields.categories):
+            if not isinstance(value, str):
+                raise ValueError("Appointment content must be text")
+        if any(not category.strip() or self._separator in category for category in fields.categories):
+            raise ValueError("Source category cannot be represented with the Windows separator")
+        if not fields.all_day and (fields.start.microsecond or fields.end.microsecond):
+            raise ValueError("Outlook appointment times require whole-second precision")
+        inventory = self.read_inventory(destination)
+        matches = [item for item in inventory.items
+                   if isinstance(item, TargetState) and item.identity == source.identity]
+        if matches:
+            if (len(matches) == 1 and matches[0].marker_schema_version == 1
+                    and target_matches(desired, matches[0])):
+                return matches[0]
+            raise OutlookCreateConflict("Existing source identity requires conflict resolution or an update")
+        if len(inventory.items) >= 100000:
+            raise OutlookCreateConflict("Destination inventory limit would be exceeded")
+        folder = self.resolve_calendar(destination)
+        appointment = None
+        save_attempted = False
+        entry_id = None
+        try:
+            appointment = folder.Items.Add(1)  # olAppointmentItem, unsaved
+            appointment.AllDayEvent = fields.all_day
+            if fields.all_day:
+                # UTC tags preserve COM DATE wall values through pywin32 conversion;
+                # for all-day Start/End these are calendar midnights, not UTC events.
+                appointment.Start = datetime.combine(fields.start, time(), timezone.utc)
+                appointment.End = datetime.combine(fields.end, time(), timezone.utc)
+            else:
+                # pywin32 converts naive datetimes through the machine timezone.
+                # Keep the UTC tag so StartUTC/EndUTC receive the intended instant.
+                appointment.StartUTC = fields.start
+                appointment.EndUTC = fields.end
+            appointment.Subject = fields.subject
+            appointment.Body = fields.body
+            appointment.Location = fields.location
+            appointment.Categories = (self._separator + " ").join(fields.categories)
+            appointment.MeetingStatus = desired.meeting_status
+            appointment.BusyStatus = desired.busy_status
+            appointment.ReminderSet = desired.reminder_set
+            if appointment.Recipients.Count != 0:
+                raise ValueError("New import unexpectedly has recipients")
+            values = {MARKER_PROFILE: str(source.identity.profile_id),
+                      MARKER_IDENTITY: source.identity.serialize(), MARKER_KEY: source.identity.key,
+                      MARKER_SCHEMA: "1"}
+            props = appointment.UserProperties
+            for name, value in values.items():
+                prop = props.Find(name, True)
+                if prop is None:
+                    prop = props.Add(name, 1, False)  # olText, no folder field registration
+                if prop.Type != 1:
+                    raise ValueError("Unexpected new-item marker property type")
+                prop.Value = value
+            save_attempted = True
+            appointment.Save()  # First Save includes content AND every ownership marker.
+            entry_id = appointment.EntryID
+            if not isinstance(entry_id, str) or not entry_id:
+                raise ValueError("Saved appointment has no EntryID")
+            fresh = self._namespace.GetItemFromID(entry_id, destination.store_id)
+            parent = describe_calendar(fresh.Parent)
+            if (parent.store_id.casefold(), parent.folder_id.casefold()) != (
+                    destination.store_id.casefold(), destination.folder_id.casefold()):
+                raise ValueError("Saved appointment is not in the selected destination")
+            observed = _read_item(fresh, self._separator)
+            if (not isinstance(observed, TargetState) or observed.identity != source.identity
+                    or observed.entry_id.casefold() != entry_id.casefold()
+                    or observed.marker_schema_version != 1 or not target_matches(desired, observed)):
+                raise ValueError("Saved appointment does not match the requested state")
+            return observed
+        except Exception:
+            if appointment is not None and not save_attempted:
+                try:
+                    appointment.Close(1)  # olDiscard: discard the unsaved object only.
+                except Exception:
+                    pass
+            raise OutlookCreateError(save_attempted=save_attempted, entry_id=entry_id) from None
+
+
 @contextmanager
-def outlook_session():
+def outlook_session(*, write=False):
     """Attach to running classic Outlook on this thread, release COM on exit."""
+    if type(write) is not bool:
+        raise ValueError("write must be a boolean")
     try:
         import pythoncom
         import win32com.client
@@ -193,7 +293,8 @@ def outlook_session():
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\International") as key:
             separator, _ = winreg.QueryValueEx(key, "sList")
-        reader = OutlookReader(namespace, category_separator=separator)
+        reader_class = OutlookWriter if write else OutlookReader
+        reader = reader_class(namespace, category_separator=separator)
     except Exception:
         namespace = application = None
         if initialized:

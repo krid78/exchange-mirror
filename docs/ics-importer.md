@@ -32,10 +32,11 @@ Step 8 adds validated JSON profiles and explicit source/destination changes.
 Step 9 adds pure target projection and create/update/unchanged/conflict planning.
 Step 10 adds coverage-aware deletion candidates and explicit confirmation gates.
 Step 11 adds the read-only classic Outlook adapter in `ics_outlook.py`.
-There is no importer command, UI or Outlook write path yet.
+Step 12 adds an explicit single-appointment create and verification path.
+There is no importer command, UI, update/delete adapter or run coordinator yet.
 The existing Exchange Mirror behavior is unchanged.
 
-Later steps will add Outlook write operations, user interface, coordination and
+Later steps will add Outlook update/delete operations, user interface, coordination and
 packaging in individually reviewable changes.
 
 ## Event identity contract
@@ -252,7 +253,7 @@ than misclassify unreadable items as unmanaged.
 
 `project_event` produces original public content with Busy=2, reminders off and
 MeetingStatus=0; source tentative status does not change these flags. Comparison
-ignores trailing body whitespace and category ordering/case, while checking all
+ignores body line-ending differences/trailing whitespace and category ordering/case, while checking all
 managed time/text/availability fields. Observed meeting status is now part of
 `TargetState` (default 0 for existing callers).
 
@@ -352,9 +353,49 @@ Marked objects must be nonrecurring appointments. Managed fields and flags are
 read into `TargetState`; timed values use Outlook StartUTC/EndUTC as UTC wall-clock
 COM dates, while all-day Start/End retain their exclusive date boundaries. Property
 access errors are never treated as absent markers or skipped items. Errors omit
-raw calendar content. This adapter contains no Add, Save, Delete or Send path.
+raw calendar content. `OutlookReader` contains no Add, Save, Delete or Send path;
+the separate opt-in create writer is described below.
 
 References: [folder IDs](https://learn.microsoft.com/en-us/office/vba/api/outlook.namespace.getfolderfromid),
 [custom property lookup](https://learn.microsoft.com/en-us/office/vba/api/outlook.userproperties.find),
 [UTC start](https://learn.microsoft.com/en-us/office/vba/api/outlook.appointmentitem.startutc),
 [recurrence views](https://learn.microsoft.com/en-us/office/vba/api/outlook.items.includerecurrences).
+
+## Single-appointment creation (step 12)
+
+`outlook_session(write=True)` yields an `OutlookWriter`; the default session remains
+read-only. `create_appointment(destination, source)` creates at most one ordinary
+appointment in the concrete destination. It performs a new full inventory read
+first. One matching, already-correct identity returns its observed state without
+Add/Save. A different existing state, duplicate identity or unsupported matching
+schema raises `OutlookCreateConflict` without writes; this API does not update.
+
+The unsaved appointment receives source text, categories, dates and every identity
+marker before its first Save. Marker fields are added to the item only, not the
+folder's field registry. BusyStatus is always 2, ReminderSet is False and
+MeetingStatus is 0. Unexpected recipients cause an abort before Save. No invitation,
+response, Send or Delete path exists in the writer.
+
+Timed UTC values retain an explicit UTC timezone tag when passed to pywin32;
+naive Python datetimes can be converted through the machine timezone. All-day
+Start/End use UTC-tagged midnight COM DATE wall values to preserve their date-only,
+exclusive boundaries. Those tags are a marshaling detail, not conversion of an
+all-day event into a UTC-timed event. Subsecond times are rejected before Add because
+this adapter does not promise their roundtrip precision. Categories containing the
+Windows list separator or empty category names are also rejected rather than split.
+
+After Save, the item is reopened by EntryID and StoreID. Parent folder, canonical
+markers, identity, content and fixed flags are checked using the same public
+`target_matches` comparison as planning, including LF/CRLF body normalization.
+Only successful verification returns `TargetState`.
+
+`OutlookCreateError` records whether Save was attempted and an EntryID if known.
+A failed Save or failed readback may already have persisted the item. There is no
+automatic retry or deletion/rollback; callers must read inventory again before
+deciding what to do. Failure before explicit Save attempts to discard only the
+unsaved object with Close(olDiscard). Run-wide locking and concurrent-writer races
+remain step 15 concerns; the inventory preflight is not an atomic transaction.
+
+References: [custom property creation](https://learn.microsoft.com/en-us/office/vba/api/outlook.userproperties.add),
+[initial property values](https://learn.microsoft.com/en-us/office/vba/api/outlook.userproperty.value),
+[Save](https://learn.microsoft.com/en-us/office/vba/api/outlook.appointmentitem.save).
